@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import type { SearchRequest, SearchResponse } from "@/lib/types";
 import {
   DEFAULT_MAX_REVIEW_COUNT,
@@ -96,6 +97,13 @@ function validateRequest(body: unknown): SearchRequest | { error: string } {
 }
 
 export async function POST(req: Request) {
+  // Middleware already gates HTML navigations, but this endpoint is also
+  // reachable via fetch — belt-and-suspenders.
+  const session = await auth();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const googleKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!googleKey) {
     return NextResponse.json(

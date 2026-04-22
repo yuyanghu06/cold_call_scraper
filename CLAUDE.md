@@ -31,7 +31,7 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
   - Twilio Lookup API v2 — `lookups.twilio.com/v2/PhoneNumbers`
 - **Deployment:** Vercel
 - **Storage:** None. All processing is in-memory per request. CSV returned as a file download.
-- **Auth:** None. Internal tool; access is controlled by not sharing the URL. If the URL leaks or the tool ever needs to go public, swap to NextAuth with Google OAuth restricted to `@micro-agi.com`.
+- **Auth:** Auth.js v5 (NextAuth) with Google OAuth restricted to `@micro-agi.com`. Domain enforcement is belt-and-suspenders: `hd=micro-agi.com` is passed as an authorization param so Google hides the consent screen from non-Workspace accounts, and the `signIn` callback verifies `profile.hd === AUTH_ALLOWED_DOMAIN` from Google's signed ID token (not spoofable). Middleware gates all routes; `/api/search` also checks `auth()` server-side.
 
 ## Project structure
 
@@ -45,10 +45,14 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
 ├── tailwind.config.ts
 ├── .env.local.example                 ← template, committed
 ├── .env.local                         ← real keys, gitignored
+├── auth.ts                            ← Auth.js v5 config (Google provider, domain gate)
+├── middleware.ts                      ← gates every route except /api/auth, /signin, static
 ├── app/
-│   ├── layout.tsx
+│   ├── layout.tsx                     ← header + sign-out, reads session server-side
 │   ├── page.tsx                       ← main form UI
+│   ├── signin/page.tsx                ← Google sign-in screen (server action)
 │   ├── api/
+│   │   ├── auth/[...nextauth]/route.ts ← NextAuth handler
 │   │   ├── search/route.ts            ← POST endpoint: runs the full pipeline
 │   │   └── health/route.ts            ← GET: health check
 │   └── globals.css
@@ -76,6 +80,10 @@ GOOGLE_PLACES_API_KEY=                # required
 TWILIO_ACCOUNT_SID=                   # required if Twilio lookup enabled
 TWILIO_AUTH_TOKEN=                    # required if Twilio lookup enabled
 NOMINATIM_USER_AGENT=                 # required — Nominatim ToS demands a real UA, e.g. "microagi-lead-gen/1.0 (ops@micro-agi.com)"
+AUTH_GOOGLE_ID=                       # required — Google OAuth client ID
+AUTH_GOOGLE_SECRET=                   # required — Google OAuth client secret
+AUTH_SECRET=                          # required — 32+ byte random, signs session JWTs (openssl rand -base64 32)
+AUTH_ALLOWED_DOMAIN=micro-agi.com     # Workspace domain allowed to sign in
 NODE_ENV=development|production
 ```
 
@@ -348,7 +356,24 @@ Auth: none. The endpoint is open on the deployed URL.
 
 ## Auth
 
-No auth. Access control is "don't share the URL." If the URL leaks or the tool needs to go public, swap to NextAuth with Google OAuth restricted to `@micro-agi.com`.
+Auth.js v5 with Google OAuth, restricted to the MicroAGI Workspace domain.
+
+**Files:**
+- `auth.ts` — NextAuth config. Google provider with `hd=micro-agi.com` authorization param, `signIn` callback that checks `profile.hd === AUTH_ALLOWED_DOMAIN`, `authorized` callback that requires a session.
+- `middleware.ts` — re-exports `auth` as the Next.js middleware. Matcher excludes `/api/auth`, `/signin`, Next internals, and `/logo.jpg`.
+- `app/api/auth/[...nextauth]/route.ts` — mounts the NextAuth handler.
+- `app/signin/page.tsx` — minimal sign-in UI with a server-action form that calls `signIn("google")`.
+- `app/api/search/route.ts` — calls `auth()` at the top and returns 401 if no session (middleware can't reach fetch-only attackers).
+
+**Google Cloud Console one-time setup:**
+1. APIs & Services → Credentials → Create OAuth client ID → Web application.
+2. Authorized redirect URIs: `https://<prod-domain>/api/auth/callback/google` and `http://localhost:3000/api/auth/callback/google`.
+3. OAuth consent screen → set **User type: Internal** if the GCP project belongs to the MicroAGI Workspace. Internal means only `@micro-agi.com` accounts can even see the consent screen — Google enforces this, not our code. If the project is Personal/External, our `hd` + `signIn` callback still enforce domain, but the consent screen will show a warning.
+4. Client ID → `AUTH_GOOGLE_ID`, Client Secret → `AUTH_GOOGLE_SECRET`.
+
+**Why `hd` + `signIn` callback both:** The `hd` authorization param is a hint to Google's consent screen — a malicious client could strip it before redirecting the user. The `signIn` callback verifies `hd` from the signed ID token Google returns, which is cryptographically trusted.
+
+If the org changes Workspace domain, update `AUTH_ALLOWED_DOMAIN` env var — no code change.
 
 ## Error handling
 
@@ -443,3 +468,4 @@ If building or debugging this tool and something in the spec is ambiguous, don't
 
 - v1 (initial spec): Google Places search + dedup + filter + optional Twilio + CSV export + Next.js frontend on Vercel.
 - v1.1: Added Nominatim geocoding (Step 0) and wired `radiusMeters` into Google Places `locationRestriction.circle`. Hard distance boundary replaces fuzzy "`<keyword> in <location>`" text biasing. Max radius is a slider: default 1km, range 1–50km (Google's circle hard cap).
+- v1.2: Added Auth.js v5 Google OAuth gated to `@micro-agi.com`. Middleware protects every route; `/api/search` double-checks `auth()` server-side.
