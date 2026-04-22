@@ -26,7 +26,7 @@ export default function SignInPage() {
         <p className="text-sm text-neutral-600 leading-relaxed">
           Sign in with your{" "}
           <span className="font-mono text-neutral-900">@micro-agi.com</span>{" "}
-          Google account.
+          Google account, or an invited email.
         </p>
         <form
           action={async () => {

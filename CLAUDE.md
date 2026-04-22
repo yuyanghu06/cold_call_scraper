@@ -31,7 +31,7 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
   - Twilio Lookup API v2 — `lookups.twilio.com/v2/PhoneNumbers`
 - **Deployment:** Vercel
 - **Storage:** None. All processing is in-memory per request. CSV returned as a file download.
-- **Auth:** Auth.js v5 (NextAuth) with Google OAuth restricted to `@micro-agi.com`. Domain enforcement is belt-and-suspenders: `hd=micro-agi.com` is passed as an authorization param so Google hides the consent screen from non-Workspace accounts, and the `signIn` callback verifies `profile.hd === AUTH_ALLOWED_DOMAIN` from Google's signed ID token (not spoofable). Middleware gates all routes; `/api/search` also checks `auth()` server-side.
+- **Auth:** Auth.js v5 (NextAuth) with Google OAuth. Access is granted if EITHER (a) Google's signed ID token reports `hd === AUTH_ALLOWED_DOMAIN` (i.e. Workspace member), OR (b) the verified email is in `AUTH_ALLOWED_EMAILS` (comma-separated invite list for outside collaborators). We deliberately do NOT pass an `hd` authorization param to Google — that would block invite-list users from reaching the consent screen. Middleware gates all routes; `/api/search` also checks `auth()` server-side.
 
 ## Project structure
 
@@ -83,7 +83,8 @@ NOMINATIM_USER_AGENT=                 # required — Nominatim ToS demands a rea
 AUTH_GOOGLE_ID=                       # required — Google OAuth client ID
 AUTH_GOOGLE_SECRET=                   # required — Google OAuth client secret
 AUTH_SECRET=                          # required — 32+ byte random, signs session JWTs (openssl rand -base64 32)
-AUTH_ALLOWED_DOMAIN=micro-agi.com     # Workspace domain allowed to sign in
+AUTH_ALLOWED_DOMAIN=micro-agi.com     # Workspace domain allowed to sign in (ID-token `hd` claim)
+AUTH_ALLOWED_EMAILS=                  # optional, comma-separated invite list for non-Workspace users
 NODE_ENV=development|production
 ```
 
@@ -356,24 +357,33 @@ Auth: none. The endpoint is open on the deployed URL.
 
 ## Auth
 
-Auth.js v5 with Google OAuth, restricted to the MicroAGI Workspace domain.
+Auth.js v5 with Google OAuth. Two-gate allowlist: domain OR invite email.
+
+**Policy (lib/auth-policy.ts):** A sign-in is accepted if *either* condition holds:
+1. `profile.hd === AUTH_ALLOWED_DOMAIN` — the user is in our Google Workspace org. `hd` is the Workspace "hosted domain" claim, signed by Google in the ID token. Not spoofable.
+2. `profile.email ∈ AUTH_ALLOWED_EMAILS` — explicit invite list for outside collaborators (comma-separated env var, case-insensitive match, Google-verified emails only).
+
+Personal Gmail accounts have no `hd` claim, so they can only get in via (2).
+
+**Why no `hd` authorization param:** Prior versions passed `hd=micro-agi.com` to Google, which would hide the consent screen from non-Workspace users. That breaks the invite-email path — an allowlisted `@gmail.com` user would never reach our `signIn` callback. We drop `hd` so any Google user can start the flow; the `signIn` callback is the real gate.
 
 **Files:**
-- `auth.ts` — NextAuth config. Google provider with `hd=micro-agi.com` authorization param, `signIn` callback that checks `profile.hd === AUTH_ALLOWED_DOMAIN`, `authorized` callback that requires a session.
-- `middleware.ts` — re-exports `auth` as the Next.js middleware. Matcher excludes `/api/auth`, `/signin`, Next internals, and `/logo.jpg`.
+- `lib/auth-policy.ts` — pure policy: `isAllowedDomain`, `isAllowedEmail`, `isAllowed`, env readers. Unit-tested.
+- `auth.ts` — NextAuth config. Google provider (no `hd` param), `signIn` callback that delegates to `isAllowed`.
+- `middleware.ts` — function-form: API routes get JSON 401, everything else redirects to `/signin`.
 - `app/api/auth/[...nextauth]/route.ts` — mounts the NextAuth handler.
 - `app/signin/page.tsx` — minimal sign-in UI with a server-action form that calls `signIn("google")`.
-- `app/api/search/route.ts` — calls `auth()` at the top and returns 401 if no session (middleware can't reach fetch-only attackers).
+- `app/api/search/route.ts` — calls `auth()` at the top and returns 401 if no session (defense in depth).
 
 **Google Cloud Console one-time setup:**
 1. APIs & Services → Credentials → Create OAuth client ID → Web application.
 2. Authorized redirect URIs: `https://<prod-domain>/api/auth/callback/google` and `http://localhost:3000/api/auth/callback/google`.
-3. OAuth consent screen → set **User type: Internal** if the GCP project belongs to the MicroAGI Workspace. Internal means only `@micro-agi.com` accounts can even see the consent screen — Google enforces this, not our code. If the project is Personal/External, our `hd` + `signIn` callback still enforce domain, but the consent screen will show a warning.
+3. OAuth consent screen → **User type: External** (since invite-list users may be outside the Workspace). Add the ops email as test user while in testing mode, or submit for verification to publish.
 4. Client ID → `AUTH_GOOGLE_ID`, Client Secret → `AUTH_GOOGLE_SECRET`.
 
-**Why `hd` + `signIn` callback both:** The `hd` authorization param is a hint to Google's consent screen — a malicious client could strip it before redirecting the user. The `signIn` callback verifies `hd` from the signed ID token Google returns, which is cryptographically trusted.
-
-If the org changes Workspace domain, update `AUTH_ALLOWED_DOMAIN` env var — no code change.
+**Adding collaborators:**
+- Same Workspace: add them to `@micro-agi.com`. No app-side change.
+- Outside collaborator: append their email to `AUTH_ALLOWED_EMAILS` in `.env` / Vercel env and redeploy.
 
 ## Error handling
 
@@ -469,3 +479,4 @@ If building or debugging this tool and something in the spec is ambiguous, don't
 - v1 (initial spec): Google Places search + dedup + filter + optional Twilio + CSV export + Next.js frontend on Vercel.
 - v1.1: Added Nominatim geocoding (Step 0) and wired `radiusMeters` into Google Places `locationRestriction.circle`. Hard distance boundary replaces fuzzy "`<keyword> in <location>`" text biasing. Max radius is a slider: default 1km, range 1–50km (Google's circle hard cap).
 - v1.2: Added Auth.js v5 Google OAuth gated to `@micro-agi.com`. Middleware protects every route; `/api/search` double-checks `auth()` server-side.
+- v1.3: Expanded auth allowlist to a union of `AUTH_ALLOWED_DOMAIN` (Workspace `hd` claim) and `AUTH_ALLOWED_EMAILS` (explicit invite list). Dropped the Google `hd` authorization param so invite-list users can reach the consent screen.
