@@ -30,6 +30,14 @@ const SORT_KINDS: Record<SortKey, SortKind> = {
   verified: "number",
 };
 
+function hostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 function sortValue(p: Place, key: SortKey): string | number {
   switch (key) {
     case "name":
@@ -93,7 +101,7 @@ export default function ResultsPanel({
     const a = document.createElement("a");
     a.href = url;
     const date = new Date().toISOString().slice(0, 10);
-    a.download = `shift-leads-${date}.csv`;
+    a.download = `microagi-leads-${date}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -197,6 +205,9 @@ export default function ResultsPanel({
                     dir={sortDir}
                     onClick={() => toggleSort("phone")}
                   />
+                  <th className="text-left px-3 py-2 font-medium text-[11px] uppercase tracking-[0.1em] text-neutral-600">
+                    Site
+                  </th>
                   <Th
                     label="City"
                     active={sortKey === "city"}
@@ -234,6 +245,23 @@ export default function ResultsPanel({
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap font-mono text-[13px] tabular-nums">
                       {p.phone ?? "—"}
+                    </td>
+                    <td
+                      className="px-3 py-1.5 max-w-[180px] truncate"
+                      title={p.website ?? undefined}
+                    >
+                      {p.website ? (
+                        <a
+                          href={p.website}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-neutral-900 hover:underline"
+                        >
+                          {hostname(p.website)}
+                        </a>
+                      ) : (
+                        <span className="text-neutral-400">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-1.5">{p.city ?? "—"}</td>
                     <td className="px-3 py-1.5 font-mono tabular-nums">

@@ -1,5 +1,34 @@
-import type { Place } from "./types";
-import { MAX_RESULTS_PER_KEYWORD } from "./constants";
+import type { GeocodedLocation, Place } from "./types";
+import {
+  MAX_RESULTS_PER_KEYWORD,
+  PLACES_MAX_RADIUS_METERS,
+} from "./constants";
+
+export interface PlacesSearchArea {
+  center: GeocodedLocation;
+  radiusMeters: number;
+}
+
+// Google Places (New) `searchText` only accepts `rectangle` under `locationRestriction`
+// (circle is supported under `locationBias`, which is a soft hint, not a hard cap).
+// We approximate our circular radius with a bounding box — slightly larger than the
+// circle by a factor of 4/π ≈ 1.27, but it's a true hard cutoff by Google.
+function circleToRectangle(center: GeocodedLocation, radiusMeters: number) {
+  const latDelta = radiusMeters / 111_320;
+  const cosLat = Math.cos((center.lat * Math.PI) / 180);
+  // Guard against cos(lat) ≈ 0 near the poles. Irrelevant for US ops but cheap insurance.
+  const lngDelta = radiusMeters / (111_320 * Math.max(cosLat, 1e-6));
+  return {
+    low: {
+      latitude: center.lat - latDelta,
+      longitude: center.lng - lngDelta,
+    },
+    high: {
+      latitude: center.lat + latDelta,
+      longitude: center.lng + lngDelta,
+    },
+  };
+}
 
 const PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 
@@ -153,17 +182,19 @@ async function searchTextOnce(
 export async function searchPlacesForKeyword(
   apiKey: string,
   keyword: string,
-  location: string,
+  area: PlacesSearchArea,
 ): Promise<Place[]> {
-  const textQuery = `${keyword} in ${location}`;
+  const radius = Math.min(area.radiusMeters, PLACES_MAX_RADIUS_METERS);
+  const rectangle = circleToRectangle(area.center, radius);
   const collected: Place[] = [];
   let pageToken: string | undefined;
 
   while (collected.length < MAX_RESULTS_PER_KEYWORD) {
     const body: Record<string, unknown> = {
-      textQuery,
+      textQuery: keyword,
       pageSize: 20,
       maxResultCount: 20,
+      locationRestriction: { rectangle },
     };
     if (pageToken) body.pageToken = pageToken;
 
@@ -187,10 +218,10 @@ export async function searchPlacesForKeyword(
 export async function searchPlacesParallel(
   apiKey: string,
   keywords: string[],
-  location: string,
+  area: PlacesSearchArea,
 ): Promise<{ results: Place[][]; errors: string[] }> {
   const settled = await Promise.allSettled(
-    keywords.map((k) => searchPlacesForKeyword(apiKey, k, location)),
+    keywords.map((k) => searchPlacesForKeyword(apiKey, k, area)),
   );
 
   const results: Place[][] = [];

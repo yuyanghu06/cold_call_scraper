@@ -5,8 +5,11 @@ import {
   DEFAULT_MIN_REVIEW_COUNT,
   MAX_KEYWORDS_PER_REQUEST,
   MAX_PLACES_HARD_CAP,
+  MAX_RADIUS_METERS,
   MAX_TWILIO_PHONES_PER_REQUEST,
+  MIN_RADIUS_METERS,
 } from "@/lib/constants";
+import { GeocodeNoMatchError, geocodeLocation } from "@/lib/geocode";
 import { searchPlacesParallel } from "@/lib/google-places";
 import { dedupPlaces } from "@/lib/dedup";
 import { filterPlaces } from "@/lib/filter";
@@ -33,6 +36,17 @@ function validateRequest(body: unknown): SearchRequest | { error: string } {
   }
   if (typeof b.location !== "string" || !b.location.trim()) {
     return { error: "location is required" };
+  }
+  if (
+    typeof b.radiusMeters !== "number" ||
+    !Number.isFinite(b.radiusMeters)
+  ) {
+    return { error: "radiusMeters is required and must be a number" };
+  }
+  if (b.radiusMeters < MIN_RADIUS_METERS || b.radiusMeters > MAX_RADIUS_METERS) {
+    return {
+      error: `radiusMeters must be between ${MIN_RADIUS_METERS} and ${MAX_RADIUS_METERS}.`,
+    };
   }
   if (!Array.isArray(b.excludeChains)) {
     return { error: "excludeChains must be an array" };
@@ -71,8 +85,7 @@ function validateRequest(body: unknown): SearchRequest | { error: string } {
     location: b.location.trim(),
     excludeChains,
     runTwilioLookup: b.runTwilioLookup,
-    radiusMeters:
-      typeof b.radiusMeters === "number" ? b.radiusMeters : undefined,
+    radiusMeters: b.radiusMeters,
     maxReviewCount:
       typeof b.maxReviewCount === "number" ? b.maxReviewCount : undefined,
     minReviewCount:
@@ -108,9 +121,34 @@ export async function POST(req: Request) {
 
   const warnings: string[] = [];
 
+  // Step 0 — geocode location (Nominatim)
+  const nominatimUA = process.env.NOMINATIM_USER_AGENT;
+  if (!nominatimUA) {
+    return NextResponse.json(
+      { error: "Server missing NOMINATIM_USER_AGENT env var" },
+      { status: 500 },
+    );
+  }
+  let center;
+  try {
+    center = await geocodeLocation(request.location, nominatimUA);
+  } catch (err) {
+    if (err instanceof GeocodeNoMatchError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { error: `Geocoding failed: ${msg}` },
+      { status: 502 },
+    );
+  }
+
   // Step 1 — parallel Places search
   const { results: keywordGroups, errors: placesErrors } =
-    await searchPlacesParallel(googleKey, request.keywords, request.location);
+    await searchPlacesParallel(googleKey, request.keywords, {
+      center,
+      radiusMeters: request.radiusMeters,
+    });
   warnings.push(...placesErrors);
   const totalFound = keywordGroups.reduce((sum, g) => sum + g.length, 0);
 

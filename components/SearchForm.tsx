@@ -7,12 +7,21 @@ import {
   DEFAULT_MAX_PLACES,
   DEFAULT_MAX_REVIEW_COUNT,
   DEFAULT_MIN_REVIEW_COUNT,
+  DEFAULT_RADIUS_METERS,
   INDUSTRY_PRESETS,
   MAX_KEYWORDS_PER_REQUEST,
   MAX_PLACES_HARD_CAP,
+  MAX_RADIUS_METERS,
   TWILIO_PRICE_PER_LOOKUP_USD,
 } from "@/lib/constants";
 import type { SearchRequest } from "@/lib/types";
+
+const MIN_RADIUS_KM = 1;
+const MAX_RADIUS_KM = Math.floor(MAX_RADIUS_METERS / 1000);
+const DEFAULT_RADIUS_KM = Math.max(
+  MIN_RADIUS_KM,
+  Math.floor(DEFAULT_RADIUS_METERS / 1000),
+);
 
 interface Props {
   loading: boolean;
@@ -36,6 +45,7 @@ export default function SearchForm({ loading, onSubmit }: Props) {
     DEFAULT_MIN_REVIEW_COUNT,
   );
   const [maxPlaces, setMaxPlaces] = useState<number>(DEFAULT_MAX_PLACES);
+  const [radiusKm, setRadiusKm] = useState<number>(DEFAULT_RADIUS_KM);
   const [runTwilioLookup, setRunTwilioLookup] = useState(false);
   const [presetId, setPresetId] = useState<string>("");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -95,6 +105,7 @@ export default function SearchForm({ loading, onSubmit }: Props) {
       maxReviewCount,
       minReviewCount,
       maxPlaces,
+      radiusMeters: radiusKm * 1000,
       runTwilioLookup,
     });
   }
@@ -113,6 +124,35 @@ export default function SearchForm({ loading, onSubmit }: Props) {
           value={location}
           onChange={(e) => setLocation(e.target.value)}
         />
+      </div>
+
+      <div>
+        <div className="flex items-baseline justify-between mb-1.5">
+          <label htmlFor="radius" className={`${LABEL_CLASS} mb-0`}>
+            Max radius
+          </label>
+          <span className="text-sm font-mono tabular-nums text-neutral-900">
+            {radiusKm} km
+          </span>
+        </div>
+        <input
+          id="radius"
+          type="range"
+          min={MIN_RADIUS_KM}
+          max={MAX_RADIUS_KM}
+          step={1}
+          value={radiusKm}
+          onChange={(e) => setRadiusKm(Number(e.target.value))}
+          className="w-full accent-neutral-900"
+          title="Max distance from geocoded location center."
+        />
+        <div className="flex justify-between text-[10px] text-neutral-400 mt-1 font-mono tabular-nums">
+          <span>{MIN_RADIUS_KM} km</span>
+          <span>{MAX_RADIUS_KM} km</span>
+        </div>
+        <p className="text-xs text-neutral-500 mt-1.5">
+          Hard distance cap from the geocoded center of your location.
+        </p>
       </div>
 
       <div>

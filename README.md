@@ -1,6 +1,6 @@
-# Shift Lead Gen
+# MicroAGI Lead Gen
 
-Internal web tool for the Shift sales team. Generates CSV lead lists of small businesses via Google Maps Places API (parallel text search across keywords), dedup + chain/size filters, and optional Twilio phone validation.
+Internal web tool for the MicroAGI sales team. Generates CSV lead lists of small businesses via Google Maps Places API (parallel text search across keywords), dedup + chain/size filters, and optional Twilio phone validation.
 
 See `CLAUDE.md` for the canonical build spec.
 

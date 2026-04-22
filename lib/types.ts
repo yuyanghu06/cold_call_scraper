@@ -1,12 +1,17 @@
 export interface SearchRequest {
   keywords: string[];
   location: string;
-  radiusMeters?: number;
+  radiusMeters: number;
   excludeChains: string[];
   maxReviewCount?: number;
   minReviewCount?: number;
   maxPlaces?: number;
   runTwilioLookup: boolean;
+}
+
+export interface GeocodedLocation {
+  lat: number;
+  lng: number;
 }
 
 export interface Place {

@@ -1,10 +1,10 @@
-# Shift Lead Gen Tool — Build Spec
+# MicroAGI Lead Gen Tool — Build Spec
 
-This file is the canonical spec for building and maintaining the Shift lead generation tool. Read this first before writing any code. Update it when architecture decisions change.
+This file is the canonical spec for building and maintaining the MicroAGI lead generation tool. Read this first before writing any code. Update it when architecture decisions change.
 
 ## What we're building
 
-An internal web tool that lets the MicroAGI / Shift sales team generate CSV lead lists of small businesses in any geography by running Google Maps Places API searches in parallel across a set of user-defined keywords, filtering out chains and oversized operations, and optionally validating phone numbers via Twilio Lookup.
+An internal web tool that lets the MicroAGI sales team generate CSV lead lists of small businesses in any geography by running Google Maps Places API searches in parallel across a set of user-defined keywords, filtering out chains and oversized operations, and optionally validating phone numbers via Twilio Lookup.
 
 The operator types in:
 - A list of search keywords (e.g. `tire shop, auto repair, mechanic, brake shop`)
@@ -27,6 +27,7 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
 - **Backend:** Next.js API routes (serverless functions on Vercel)
 - **APIs:**
   - Google Places API (New) — `places.googleapis.com/v1/places:searchText`
+  - Nominatim (OpenStreetMap) — `nominatim.openstreetmap.org/search` — free geocoding for the operator's location string
   - Twilio Lookup API v2 — `lookups.twilio.com/v2/PhoneNumbers`
 - **Deployment:** Vercel
 - **Storage:** None. All processing is in-memory per request. CSV returned as a file download.
@@ -53,6 +54,7 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
 │   └── globals.css
 ├── lib/
 │   ├── google-places.ts               ← Google Places API client
+│   ├── geocode.ts                     ← Nominatim geocoding client
 │   ├── twilio-lookup.ts               ← Twilio Lookup client
 │   ├── dedup.ts                       ← dedup logic
 │   ├── filter.ts                      ← chain exclusion + size proxy filters
@@ -73,6 +75,7 @@ This file is read by Claude Code (or whoever) when adding features, debugging, o
 GOOGLE_PLACES_API_KEY=                # required
 TWILIO_ACCOUNT_SID=                   # required if Twilio lookup enabled
 TWILIO_AUTH_TOKEN=                    # required if Twilio lookup enabled
+NOMINATIM_USER_AGENT=                 # required — Nominatim ToS demands a real UA, e.g. "microagi-lead-gen/1.0 (ops@micro-agi.com)"
 NODE_ENV=development|production
 ```
 
@@ -85,8 +88,8 @@ Define in `lib/types.ts`:
 ```typescript
 export interface SearchRequest {
   keywords: string[];              // ["auto repair", "tire shop"]
-  location: string;                // "New York, NY" or a specific neighborhood
-  radiusMeters?: number;           // default 50000
+  location: string;                // "New York, NY" or a specific neighborhood — geocoded via Nominatim
+  radiusMeters: number;            // default 1000 (1km), min 500, max 50000 (Google Places circle hard cap)
   excludeChains: string[];         // ["Mavis", "Firestone", ...]
   maxReviewCount?: number;         // default 400
   minReviewCount?: number;         // default 0
@@ -133,6 +136,27 @@ export interface SearchResponse {
 
 When `POST /api/search` is hit, run this pipeline in order.
 
+### Step 0 — Geocode location (Nominatim)
+
+Resolve `request.location` to a `{lat, lng}` center point via Nominatim in `lib/geocode.ts`. This lets Step 1 enforce a hard distance radius instead of relying on Google's fuzzy text-based location biasing.
+
+**Endpoint:** `GET https://nominatim.openstreetmap.org/search?q=<location>&format=json&limit=1&addressdetails=0`
+
+**Headers:**
+```
+User-Agent: <NOMINATIM_USER_AGENT>
+```
+
+Nominatim's ToS requires a real, contact-identifying `User-Agent` and rate-limits to ~1 req/sec. The User-Agent is mandatory — requests without one get blocked.
+
+**Response:** take the first result's `lat` and `lon` (strings, parse to float). Ignore the rest.
+
+**Caching:** keep a module-level `Map<string, {lat, lng}>` keyed on the trimmed, lowercased location string. Hits are free and invisible to Nominatim. Cache only lives for the warm lifetime of a serverless instance — that's fine, it's a courtesy not a correctness requirement.
+
+**Errors:**
+- Empty result array → reject the request with HTTP 400: `"Couldn't find a location matching '<input>'. Try a city, neighborhood, or zip code."`
+- Network / 5xx → retry once after 1s, then fail with a clear error. Don't fall back to unrestricted Google search silently.
+
 ### Step 1 — Parallel Google Places text search
 
 For each keyword in `keywords`, call Google Places API `searchText` in parallel. Use `Promise.all`.
@@ -149,11 +173,19 @@ X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.ad
 **Body:**
 ```json
 {
-  "textQuery": "<keyword> in <location>",
+  "textQuery": "<keyword>",
   "pageSize": 20,
-  "maxResultCount": 20
+  "maxResultCount": 20,
+  "locationRestriction": {
+    "rectangle": {
+      "low":  { "latitude": <south>, "longitude": <west> },
+      "high": { "latitude": <north>, "longitude": <east> }
+    }
+  }
 }
 ```
+
+Important Places (New) quirk: `searchText`'s `locationRestriction` only accepts `rectangle`. `circle` is only valid under `locationBias` (a soft hint, not a hard cap) or on the `searchNearby` endpoint. To honor the operator's circular `radiusMeters` as a hard cutoff, Step 1 converts (center, radiusMeters) into a bounding box in `lib/google-places.ts` via `circleToRectangle` (1° lat ≈ 111.32 km; lng scaled by cos(lat)). The resulting square is ~27% larger in area than the target circle but is a true hard cutoff by Google. No post-filter for a perfect-circle shape — not worth the added complexity for this tool.
 
 **Pagination:** Google Places (New) returns up to 20 results per call, max 60 via pagination (`nextPageToken`). Paginate until no more results or 60 reached. Each keyword therefore returns up to 60 places.
 
@@ -228,13 +260,16 @@ Single page. Form on the left, results on the right (or stacked on mobile).
 
 ### Form fields
 
-1. **Location** — text input. Placeholder: "New York, NY" or "Brooklyn" or a zip code.
-2. **Search keywords** — chip/tag input. User types a keyword and hits enter to add it. Shows existing keywords as removable chips. Starts empty, but has a "Load preset" dropdown with saved industry presets (see below).
-3. **Chain names to exclude** — chip/tag input, same UX as keywords. Also has a "Load preset" dropdown matching the industry preset.
-4. **Max review count** — number input. Default 400. Tooltip: "Shops with more reviews than this are usually chains or very large operations."
-5. **Min review count** — number input. Default 0. Tooltip: "Set this to filter out shops with no review history."
-6. **Run Twilio validation** — toggle. Below the toggle, show estimated cost: `~$0.015 × N phones = $X.XX`.
-7. **Submit** — big button. Disabled while in flight.
+1. **Location** — text input. Placeholder: "New York, NY" or "Brooklyn" or a zip code. Geocoded via Nominatim server-side.
+2. **Max radius** — range slider (km), default 1, min 1, max 50. Label: "Max distance from geocoded location center (km)". 50km matches Google Places' `locationRestriction.circle.radius` hard cap.
+3. **Search keywords** — chip/tag input. User types a keyword and hits enter to add it. Shows existing keywords as removable chips. Starts empty, but has a "Load preset" dropdown with saved industry presets (see below).
+4. **Chain names to exclude** — chip/tag input, same UX as keywords. Also has a "Load preset" dropdown matching the industry preset.
+5. **Max review count** — number input. Default 400. Tooltip: "Shops with more reviews than this are usually chains or very large operations."
+6. **Min review count** — number input. Default 0. Tooltip: "Set this to filter out shops with no review history."
+7. **Run Twilio validation** — toggle. Below the toggle, show estimated cost: `~$0.015 × N phones = $X.XX`.
+8. **Submit** — big button. Disabled while in flight.
+
+The UI sends `radiusMeters` (km × 1000) to the API.
 
 ### Industry presets
 
@@ -317,11 +352,14 @@ No auth. Access control is "don't share the URL." If the URL leaks or the tool n
 
 ## Error handling
 
+- **Nominatim no match:** reject with HTTP 400 and a clear message — don't silently proceed with unrestricted Google search.
+- **Nominatim 5xx / timeout:** retry once after 1s, then fail. Don't mask the outage.
 - **Google Places 429:** retry with exponential backoff (3 attempts).
 - **Google Places quota exhausted:** surface a clear error to the user: "Google Places daily quota hit. Try again tomorrow or contact admin."
 - **Twilio error:** don't fail the whole request. Mark affected phones as unvalidated and add to `warnings[]`.
-- **Invalid location string:** Google Places will return zero results, not an error. Frontend should warn the user if `totalFound === 0`.
+- **Empty Google results:** Step 0 succeeded but Places returned nothing — usually means the radius is too small or the keywords don't match. Frontend should warn the user if `totalFound === 0`.
 - **Keyword list too long:** cap at 20 keywords per request (serverless timeout risk). Reject with a clear error.
+- **Radius out of bounds:** reject client-side and server-side if `radiusMeters < 500` or `> 50000`.
 
 ## Timeouts
 
@@ -363,7 +401,7 @@ Test command: `npm test`. Run before every PR.
 3. Set env vars in Vercel dashboard (all four from the env list).
 4. Deploy. Vercel auto-deploys on every push to `main`.
 
-Custom domain (optional): something like `leads.shift.micro-agi.com`.
+Custom domain (optional): something like `leads.micro-agi.com`.
 
 ## Future (not v1)
 
@@ -404,3 +442,4 @@ If building or debugging this tool and something in the spec is ambiguous, don't
 ## Change log
 
 - v1 (initial spec): Google Places search + dedup + filter + optional Twilio + CSV export + Next.js frontend on Vercel.
+- v1.1: Added Nominatim geocoding (Step 0) and wired `radiusMeters` into Google Places `locationRestriction.circle`. Hard distance boundary replaces fuzzy "`<keyword> in <location>`" text biasing. Max radius is a slider: default 1km, range 1–50km (Google's circle hard cap).

@@ -2,8 +2,13 @@ import type { IndustryPreset } from "./types";
 
 export const DEFAULT_MAX_REVIEW_COUNT = 400;
 export const DEFAULT_MIN_REVIEW_COUNT = 0;
-export const DEFAULT_RADIUS_METERS = 50000;
+export const DEFAULT_RADIUS_METERS = 1000;
 export const DEFAULT_MAX_PLACES = 500;
+
+// Radius bounds. 50km is Google Places `locationRestriction.circle.radius` hard cap.
+export const MIN_RADIUS_METERS = 500;
+export const MAX_RADIUS_METERS = 50_000;
+export const PLACES_MAX_RADIUS_METERS = 50_000;
 
 export const MAX_KEYWORDS_PER_REQUEST = 20;
 export const MAX_RESULTS_PER_KEYWORD = 60;
