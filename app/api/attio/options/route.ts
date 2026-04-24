@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { listAttributeOptions, SLUG } from "@/lib/attio";
+import { listAttributeOptions, SLUG } from "@/lib/services/attioService";
 import { gateAttioRequest } from "@/lib/attio-unlock";
 
 export const maxDuration = 30;
@@ -15,18 +15,12 @@ const ALLOWED: Record<string, string> = {
 export async function GET(req: Request) {
   const session = await auth();
   const gate = await gateAttioRequest(!!session?.user);
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
-  }
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const url = new URL(req.url);
   const attr = url.searchParams.get("attribute");
-  if (!attr || !(attr in ALLOWED)) {
-    return NextResponse.json(
-      { error: "attribute must be 'territory', 'callStatus', or 'stage'" },
-      { status: 400 },
-    );
-  }
+  if (!attr || !(attr in ALLOWED))
+    return NextResponse.json({ error: "attribute must be 'territory', 'callStatus', or 'stage'" }, { status: 400 });
 
   try {
     const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);

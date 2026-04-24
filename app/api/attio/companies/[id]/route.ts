@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { updateTrackingCompany, type TrackingUpdate } from "@/lib/attio";
+import { updateTrackingCompany } from "@/lib/services/attioService";
 import { gateAttioRequest } from "@/lib/attio-unlock";
+import type { TrackingUpdate } from "@/lib/viewmodels/trackingViewModel";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -12,14 +13,10 @@ export async function PATCH(
 ) {
   const session = await auth();
   const gate = await gateAttioRequest(!!session?.user);
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
-  }
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const { id } = await params;
-  if (!id) {
-    return NextResponse.json({ error: "Record id required" }, { status: 400 });
-  }
+  if (!id) return NextResponse.json({ error: "Record id required" }, { status: 400 });
 
   let body: unknown;
   try {
@@ -29,7 +26,6 @@ export async function PATCH(
   }
 
   const b = (body ?? {}) as Record<string, unknown>;
-  const update: TrackingUpdate = {};
 
   function readOptionalText(v: unknown): string | null {
     if (v === null) return null;
@@ -37,31 +33,22 @@ export async function PATCH(
     return v;
   }
 
+  const update: TrackingUpdate = {};
   if (b.name !== undefined) {
-    if (typeof b.name !== "string" || !b.name.trim()) {
-      return NextResponse.json(
-        { error: "name must be a non-empty string" },
-        { status: 400 },
-      );
-    }
+    if (typeof b.name !== "string" || !b.name.trim())
+      return NextResponse.json({ error: "name must be a non-empty string" }, { status: 400 });
     update.name = b.name;
   }
   if (b.territory !== undefined) {
-    if (!Array.isArray(b.territory)) {
-      return NextResponse.json(
-        { error: "territory must be an array of strings" },
-        { status: 400 },
-      );
-    }
+    if (!Array.isArray(b.territory))
+      return NextResponse.json({ error: "territory must be an array" }, { status: 400 });
     update.territory = b.territory.filter((s): s is string => typeof s === "string");
   }
   if (b.callStatus !== undefined) update.callStatus = readOptionalText(b.callStatus);
   if (b.industry !== undefined) update.industry = readOptionalText(b.industry);
   if (b.address !== undefined) update.address = readOptionalText(b.address);
   if (b.ownerName !== undefined) update.ownerName = readOptionalText(b.ownerName);
-  if (b.followUpNumber !== undefined) {
-    update.followUpNumber = readOptionalText(b.followUpNumber);
-  }
+  if (b.followUpNumber !== undefined) update.followUpNumber = readOptionalText(b.followUpNumber);
   if (b.notes !== undefined) update.notes = readOptionalText(b.notes);
 
   try {

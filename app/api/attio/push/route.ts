@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { pushPlacesToAttio } from "@/lib/attio";
+import { pushPlacesToAttio } from "@/lib/services/attioService";
 import { gateAttioRequest } from "@/lib/attio-unlock";
-import { enrichPlacesWithIndustry } from "@/lib/industry-enrichment";
+import { enrichPlacesWithIndustry } from "@/lib/services/enrichmentService";
 import type { Place } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -11,9 +11,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   const session = await auth();
   const gate = await gateAttioRequest(!!session?.user);
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
-  }
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   let body: unknown;
   try {
@@ -28,12 +26,8 @@ export async function POST(req: Request) {
     ? b.keywords.filter((k): k is string => typeof k === "string")
     : [];
 
-  if (!places || places.length === 0) {
-    return NextResponse.json(
-      { error: "places array required" },
-      { status: 400 },
-    );
-  }
+  if (!places || places.length === 0)
+    return NextResponse.json({ error: "places array required" }, { status: 400 });
 
   try {
     const enrichment = await enrichPlacesWithIndustry(places, keywords);

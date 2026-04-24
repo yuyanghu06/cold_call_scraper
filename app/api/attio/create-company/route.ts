@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { normalizeTerritory, pushCsvRowsToAttio, SLUG } from "@/lib/attio";
+import { normalizeTerritory, pushCsvRowsToAttio, SLUG } from "@/lib/services/attioService";
 import { gateAttioRequest } from "@/lib/attio-unlock";
 
 export const maxDuration = 60;
@@ -15,9 +15,7 @@ function asString(v: unknown): string | null {
 export async function POST(req: Request) {
   const session = await auth();
   const gate = await gateAttioRequest(!!session?.user);
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
-  }
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   let body: unknown;
   try {
@@ -28,13 +26,7 @@ export async function POST(req: Request) {
 
   const b = (body ?? {}) as Record<string, unknown>;
   const name = asString(b.name);
-
-  if (!name) {
-    return NextResponse.json(
-      { error: "Business name is required" },
-      { status: 400 },
-    );
-  }
+  if (!name) return NextResponse.json({ error: "Business name is required" }, { status: 400 });
 
   const values: Record<string, unknown> = { [SLUG.name]: name };
   const industry = asString(b.industry);
@@ -43,12 +35,7 @@ export async function POST(req: Request) {
   if (territory) values[SLUG.territory] = [normalizeTerritory(territory)];
   const stage = asString(b.stage);
   if (stage) values[SLUG.stage] = stage;
-  const result = asString(b.result);
-  // Default Call Status to "Not called yet" for newly created manual entries.
-  // pushCsvRowsToAttio's upsert will only write call_status on CREATE (because
-  // the existing-row branch skips non-empty fields); on UPDATE, the existing
-  // value is preserved.
-  values[SLUG.callStatus] = result ?? "Not called yet";
+  values[SLUG.callStatus] = asString(b.result) ?? "Not called yet";
   const ownerName = asString(b.ownerName);
   if (ownerName) values[SLUG.ownerName] = ownerName;
   const followUpNumber = asString(b.followUpNumber);
