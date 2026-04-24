@@ -81,7 +81,7 @@ export default function MultiSelect({
         <span className="text-neutral-400 text-[10px] shrink-0">▾</span>
       </button>
       {open && (
-        <div className="absolute z-10 mt-1 left-0 min-w-full max-w-[320px] max-h-[300px] overflow-auto border border-neutral-300 bg-white shadow-sm">
+        <div className="absolute z-50 mt-1 left-0 min-w-full max-w-[320px] max-h-[300px] overflow-auto border border-neutral-300 bg-white shadow-sm">
           <div className="flex items-center justify-between px-2 py-1.5 border-b border-neutral-200 text-[10px] uppercase tracking-[0.12em] text-neutral-500">
             <span>{value.length} selected</span>
             <button

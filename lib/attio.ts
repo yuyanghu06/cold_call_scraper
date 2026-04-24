@@ -34,6 +34,10 @@ export const SLUG = {
   industry: "industry",
   // Added for the Google Places → Attio pipeline:
   address: "address",
+  // Attio's built-in location attribute on every Company — shows up in the
+  // right-rail "Primary location" card. Expects a structured object with
+  // line_1, locality, region, postcode, country_code, latitude, longitude.
+  primaryLocation: "primary_location",
   // NOTE: Attio's slug is "store_number" — the column was originally created
   // under a different name and renamed to "Company Number"; Attio doesn't
   // update slugs on rename. Verified via `npm run list-slugs`.
@@ -521,7 +525,56 @@ function buildCreateValues(place: Place): Record<string, unknown> {
   if (place.industry) values[SLUG.industry] = place.industry;
   if (place.address) values[SLUG.address] = place.address;
   if (place.phone) values[SLUG.companyNumber] = place.phone;
+  const location = buildLocationPayload(place);
+  if (location) values[SLUG.primaryLocation] = location;
   return values;
+}
+
+// Map Google Places components into Attio's location attribute shape. Attio's
+// location values are objects with: line_1..line_4, locality (city),
+// region (state), postcode, country_code, latitude, longitude. Returns null
+// if nothing useful is available.
+//
+// line_1 is a best-effort street line: Google's formattedAddress puts street
+// before the first comma ("123 Main St, New York, NY 10001, USA"), so we split
+// on "," and take the first non-empty piece. Falls back to the full formatted
+// address if that heuristic yields nothing.
+function buildLocationPayload(place: Place): Record<string, unknown> | null {
+  const street = extractStreetLine(place.address) ?? place.address ?? null;
+  // country shortText from Google Places is already ISO-3166 alpha-2 ("US").
+  const countryCode =
+    place.country && /^[A-Za-z]{2}$/.test(place.country)
+      ? place.country.toUpperCase()
+      : null;
+  const payload: Record<string, unknown> = {
+    line_1: street || null,
+    line_2: null,
+    line_3: null,
+    line_4: null,
+    locality: place.city ?? null,
+    region: place.state ?? null,
+    postcode: place.zip ?? null,
+    country_code: countryCode,
+    latitude: place.latitude ?? null,
+    longitude: place.longitude ?? null,
+  };
+  // Bail if nothing substantive — Attio doesn't want an empty location object.
+  if (
+    !payload.line_1 &&
+    !payload.locality &&
+    !payload.region &&
+    !payload.postcode &&
+    payload.latitude === null
+  ) {
+    return null;
+  }
+  return payload;
+}
+
+function extractStreetLine(formattedAddress: string | null | undefined): string | null {
+  if (!formattedAddress) return null;
+  const first = formattedAddress.split(",")[0]?.trim();
+  return first && first.length > 0 ? first : null;
 }
 
 // Only include fields that are currently empty on the existing record.
@@ -552,6 +605,10 @@ function buildUpdatePayload(
   }
   if (isFieldEmpty(existing[SLUG.companyNumber]) && place.phone) {
     updates[SLUG.companyNumber] = place.phone;
+  }
+  if (isFieldEmpty(existing[SLUG.primaryLocation])) {
+    const location = buildLocationPayload(place);
+    if (location) updates[SLUG.primaryLocation] = location;
   }
   return updates;
 }
