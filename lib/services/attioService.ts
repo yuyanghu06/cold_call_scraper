@@ -130,6 +130,7 @@ function normalizeTrackingCompany(record: AttioRecord): TrackingCompany {
     industry: readText(v[SLUG.industry]) ?? readSelect(v[SLUG.industry]),
     address: readText(v[SLUG.address]),
     ownerName: readText(v[SLUG.ownerName]),
+    companyNumber: readText(v[SLUG.companyNumber]),
     followUpNumber: readText(v[SLUG.followUpNumber]),
     notes: readText(v[SLUG.notes]),
   };
@@ -287,6 +288,7 @@ export async function updateTrackingCompany(
   if (update.industry !== undefined) values[SLUG.industry] = update.industry ?? "";
   if (update.address !== undefined) values[SLUG.address] = update.address ?? "";
   if (update.ownerName !== undefined) values[SLUG.ownerName] = update.ownerName ?? "";
+  if (update.companyNumber !== undefined) values[SLUG.companyNumber] = update.companyNumber ?? "";
   if (update.followUpNumber !== undefined) values[SLUG.followUpNumber] = update.followUpNumber ?? "";
   if (update.notes !== undefined) values[SLUG.notes] = update.notes ?? "";
 

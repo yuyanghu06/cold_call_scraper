@@ -12,6 +12,7 @@ interface TrackingCompany {
   industry: string | null;
   address: string | null;
   ownerName: string | null;
+  companyNumber: string | null;
   followUpNumber: string | null;
   notes: string | null;
 }
@@ -288,6 +289,7 @@ type SortKey =
   | "industry"
   | "address"
   | "ownerName"
+  | "companyNumber"
   | "followUpNumber"
   | "notes";
 type SortDir = "asc" | "desc";
@@ -364,6 +366,13 @@ function CompaniesTable(props: {
             </SortableTh>
             <SortableTh sortKey="ownerName" sort={sort} onToggle={toggleSort}>
               Owner name
+            </SortableTh>
+            <SortableTh
+              sortKey="companyNumber"
+              sort={sort}
+              onToggle={toggleSort}
+            >
+              Company number
             </SortableTh>
             <SortableTh
               sortKey="followUpNumber"
@@ -463,6 +472,7 @@ type EditableField =
   | "industry"
   | "address"
   | "ownerName"
+  | "companyNumber"
   | "followUpNumber"
   | "notes";
 
@@ -612,6 +622,20 @@ function CompanyRow(props: {
               "ownerName",
               { ownerName: next || null },
               { ownerName: next || null },
+            )
+          }
+        />
+      </td>
+      <td className="px-3 py-2 min-w-[150px] border-b border-neutral-200">
+        <TextCell
+          value={props.row.companyNumber ?? ""}
+          saving={saving === "companyNumber"}
+          placeholder="—"
+          onCommit={(next) =>
+            persist(
+              "companyNumber",
+              { companyNumber: next || null },
+              { companyNumber: next || null },
             )
           }
         />
