@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 const ALLOWED: Record<string, string> = {
   territory: SLUG.territory,
   callStatus: SLUG.callStatus,
+  stage: SLUG.stage,
 };
 
 export async function GET(req: Request) {
@@ -22,7 +23,7 @@ export async function GET(req: Request) {
   const attr = url.searchParams.get("attribute");
   if (!attr || !(attr in ALLOWED)) {
     return NextResponse.json(
-      { error: "attribute must be 'territory' or 'callStatus'" },
+      { error: "attribute must be 'territory', 'callStatus', or 'stage'" },
       { status: 400 },
     );
   }

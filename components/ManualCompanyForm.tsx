@@ -18,24 +18,11 @@ const INPUT_CLASS =
 const LABEL_CLASS =
   "block text-[11px] uppercase tracking-[0.14em] text-neutral-500 mb-1.5";
 
-const RESULT_SUGGESTIONS = [
-  "Not called yet",
-  "Interested",
-  "Not Interested",
-  "No Pickup",
-  "Voicemail",
-  "Callback",
-  "No Decision Maker",
-];
-
-const STAGE_OPTIONS = [
-  "Cold Lead",
-  "Warm Lead",
-  "Negotiating",
-  "Onboarding",
-  "Launched",
-  "Churned / Paused",
-];
+// Call Status + Stage options are loaded live from Attio at mount so the form
+// only ever offers values the workspace has actually configured. Hardcoded
+// fallbacks caused 400s when a listed option (e.g. "Callback") didn't exist.
+const RESULT_FALLBACK = ["Not called yet"];
+const STAGE_FALLBACK = ["Cold Lead"];
 
 export default function ManualCompanyForm() {
   const [name, setName] = useState("");
@@ -48,6 +35,8 @@ export default function ManualCompanyForm() {
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [unlocked, setUnlocked] = useState(false);
+  const [resultOptions, setResultOptions] = useState<string[]>(RESULT_FALLBACK);
+  const [stageOptions, setStageOptions] = useState<string[]>(STAGE_FALLBACK);
 
   useEffect(() => {
     const read = async () => {
@@ -65,6 +54,35 @@ export default function ManualCompanyForm() {
     window.addEventListener(ATTIO_UNLOCK_EVENT, onChanged);
     return () => window.removeEventListener(ATTIO_UNLOCK_EVENT, onChanged);
   }, []);
+
+  // Pull Call Status + Stage options live from Attio whenever we're unlocked,
+  // so the dropdowns match whatever the workspace has configured.
+  useEffect(() => {
+    if (!unlocked) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [callStatusRes, stageRes] = await Promise.all([
+          fetch("/api/attio/options?attribute=callStatus", { cache: "no-store" }),
+          fetch("/api/attio/options?attribute=stage", { cache: "no-store" }),
+        ]);
+        if (cancelled) return;
+        if (callStatusRes.ok) {
+          const data = (await callStatusRes.json()) as { options?: string[] };
+          if (data.options && data.options.length > 0) setResultOptions(data.options);
+        }
+        if (stageRes.ok) {
+          const data = (await stageRes.json()) as { options?: string[] };
+          if (data.options && data.options.length > 0) setStageOptions(data.options);
+        }
+      } catch {
+        // fall back to defaults already in state
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -212,7 +230,7 @@ export default function ManualCompanyForm() {
               id="mcf-stage"
               value={stage}
               onChange={setStage}
-              options={STAGE_OPTIONS}
+              options={stageOptions}
               placeholder="Cold Lead"
             />
           </div>
@@ -224,7 +242,7 @@ export default function ManualCompanyForm() {
               id="mcf-result"
               value={result}
               onChange={setResult}
-              options={RESULT_SUGGESTIONS}
+              options={resultOptions}
               placeholder="Not called yet"
             />
           </div>
@@ -246,7 +264,7 @@ export default function ManualCompanyForm() {
           </div>
           <div>
             <label htmlFor="mcf-followup-number" className={LABEL_CLASS}>
-              Follow-up number
+              Follow-up contact
             </label>
             <input
               id="mcf-followup-number"

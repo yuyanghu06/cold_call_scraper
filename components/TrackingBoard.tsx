@@ -370,7 +370,7 @@ function CompaniesTable(props: {
               sort={sort}
               onToggle={toggleSort}
             >
-              Follow-up number
+              Follow-up contact
             </SortableTh>
             <SortableTh sortKey="notes" sort={sort} onToggle={toggleSort}>
               Notes
