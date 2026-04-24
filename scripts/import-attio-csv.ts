@@ -4,32 +4,37 @@
 // semantics as the in-app Google Places → Attio pipeline.
 //
 // Usage:
-//   npm run import-csv -- path/to/file.csv         (reads ATTIO_API_KEY from .env[.local])
-//   npm run import-csv -- path/to/folder/          (processes every .csv in the folder)
-//   ATTIO_API_KEY=<key> npm run import-csv -- <path>   (explicit override)
+//   npm run import-csv -- path/to/file.csv                 (reads ATTIO_API_KEY from .env[.local])
+//   npm run import-csv -- path/to/folder/                  (processes every .csv in the folder)
+//   npm run import-csv -- <path> --caller "Yuyang"         (stamp every row with a Caller)
+//   npm run import-csv -- <path> --yuyang                  (shorthand — one auto-flag per
+//                                                           Caller option in Attio, e.g.
+//                                                           "Jane Doe" → --jane-doe)
+//   ATTIO_API_KEY=<key> npm run import-csv -- <path>       (explicit override)
 //
 // Expected CSV headers (case/space-insensitive; extra columns are ignored):
-//   Business Name        → matched to Attio's Company name (match key)
+//   Business Name        → Attio `name` (match key). If col 0 has no header, col 0 is used.
 //   Industry             → Attio `industry`
-//   Result               → Attio `call_status`
+//   Result               → Attio `call_status`   (select — value must be an existing option)
 //   Follow-up Number     → Attio `follow_up_number`
 //   Owner Name           → Attio `owner_name`
+//   Caller               → Attio `caller`        (select — value must be an existing option)
 //   Notes                → Attio `notes`
 //   Address              → Attio `address`
+//
+// --caller "<name>" stamps every row with that Caller. A non-empty Caller
+// column in a given row overrides the CLI value for that row.
 //
 // Additionally, for each row the script calls Google Places (searchText) to
 // look up the business and populates Territory from its state. Requires
 // GOOGLE_PLACES_API_KEY in .env[.local]. If the key is missing, the step
 // is skipped with a note and Territory stays empty.
-//
-// "Follow-up" (email) is not mapped — Attio has no matching column today. If
-// you add one, add a corresponding slug to SLUG in lib/attio.ts and an entry
-// to CSV_HEADER_TO_SLUG below.
 
 import "./_load-env";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  listAttributeOptions,
   normalizeTerritory,
   pushCsvRowsToAttio,
   SLUG,
@@ -45,6 +50,7 @@ const CSV_HEADER_TO_SLUG: Record<string, string> = {
   result: SLUG.callStatus,
   follow_up_number: SLUG.followUpNumber,
   owner_name: SLUG.ownerName,
+  caller: SLUG.caller,
   notes: SLUG.notes,
   address: SLUG.address,
 };
@@ -110,8 +116,9 @@ function parseCsv(text: string): string[][] {
 function usage(msg?: string): never {
   if (msg) console.error(`Error: ${msg}\n`);
   console.error("Usage:");
-  console.error("  npm run import-csv -- <path-to-csv-or-folder>");
-  console.error("  npx tsx scripts/import-attio-csv.ts <path>");
+  console.error("  npm run import-csv -- <path-to-csv-or-folder> [--caller \"<name>\"]");
+  console.error("  npm run import-csv -- <path> --<first-name>       (shorthand, e.g. --yuyang)");
+  console.error("  npx tsx scripts/import-attio-csv.ts <path> [--caller=<name>]");
   process.exit(1);
 }
 
@@ -120,6 +127,11 @@ interface ParsedCsv {
   inputs: CsvUpsertInput[];
   skippedRowLines: number[];
   unknownCols: string[];
+  emailInFollowUp: number;
+}
+
+function looksLikeEmail(v: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
 function parseCsvFile(csvPath: string): ParsedCsv {
@@ -131,6 +143,13 @@ function parseCsvFile(csvPath: string): ParsedCsv {
 
   const [header, ...dataRows] = rows;
   const normalized = header.map(normalizeHeader);
+
+  // If col 0's header is blank, treat it as Business Name — some source
+  // sheets (e.g. Google Sheets rep trackers) leave the name column unnamed.
+  if (normalized[0] === "" && !normalized.includes("business_name")) {
+    normalized[0] = "business_name";
+  }
+
   const nameCol = normalized.indexOf("business_name");
   if (nameCol === -1) {
     throw new Error(
@@ -140,6 +159,7 @@ function parseCsvFile(csvPath: string): ParsedCsv {
 
   const inputs: CsvUpsertInput[] = [];
   const skippedRowLines: number[] = [];
+  let emailInFollowUp = 0;
   for (let r = 0; r < dataRows.length; r++) {
     const row = dataRows[r];
     const values: Record<string, unknown> = {};
@@ -149,6 +169,7 @@ function parseCsvFile(csvPath: string): ParsedCsv {
       const raw = (row[i] ?? "").trim();
       if (!raw) continue;
       values[slug] = raw;
+      if (slug === SLUG.followUpNumber && looksLikeEmail(raw)) emailInFollowUp++;
     }
     const name = values[SLUG.name];
     if (typeof name !== "string" || !name.trim()) {
@@ -167,14 +188,21 @@ function parseCsvFile(csvPath: string): ParsedCsv {
     inputs,
     skippedRowLines,
     unknownCols,
+    emailInFollowUp,
   };
 }
 
 interface EnrichmentSummary {
   lookedUp: number;
   filled: number;
+  skippedOutOfRegion: number;
   errors: string[];
 }
+
+// Only these Territory values get written — anything Google resolves to
+// some other state is left blank. Keep in sync with whichever Territory
+// options the sales team actually staffs in Attio.
+const ALLOWED_TERRITORIES = new Set(["New York", "Tennessee"]);
 
 // For each row, query Google Places for the business and extract its state
 // from administrative_area_level_1. Skips rows whose Territory slot is
@@ -188,6 +216,7 @@ async function enrichRowsWithState(
   const summary: EnrichmentSummary = {
     lookedUp: 0,
     filled: 0,
+    skippedOutOfRegion: 0,
     errors: [],
   };
 
@@ -217,10 +246,14 @@ async function enrichRowsWithState(
             name,
             address,
           );
-          if (state) {
-            input.values[SLUG.territory] = [normalizeTerritory(state)];
-            summary.filled++;
+          if (!state) continue;
+          const territory = normalizeTerritory(state);
+          if (!ALLOWED_TERRITORIES.has(territory)) {
+            summary.skippedOutOfRegion++;
+            continue;
           }
+          input.values[SLUG.territory] = [territory];
+          summary.filled++;
         } catch (err) {
           summary.errors.push(
             `${name}: ${err instanceof Error ? err.message : String(err)}`,
@@ -247,9 +280,66 @@ function resolveCsvPaths(resolved: string): string[] {
   return files;
 }
 
-async function main(): Promise<void> {
-  const target = process.argv[2];
+interface CliArgs {
+  target: string;
+  caller: string | null;
+  // Unrecognized long flags (e.g. `--yuyang`) collected here; resolved against
+  // live Attio Caller options after we can query the API.
+  unresolvedFlags: string[];
+}
+
+function parseCliArgs(argv: string[]): CliArgs {
+  let target: string | null = null;
+  let caller: string | null = null;
+  const unresolvedFlags: string[] = [];
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--caller") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("--")) usage("--caller requires a value");
+      caller = next.trim();
+      if (!caller) usage("--caller value cannot be blank");
+      i++;
+    } else if (a.startsWith("--caller=")) {
+      caller = a.slice("--caller=".length).trim();
+      if (!caller) usage("--caller value cannot be blank");
+    } else if (a.startsWith("--")) {
+      unresolvedFlags.push(a);
+    } else if (!target) {
+      target = a;
+    } else {
+      usage(`unexpected argument: ${a}`);
+    }
+  }
   if (!target) usage("missing CSV or folder path");
+  return { target: target!, caller, unresolvedFlags };
+}
+
+// "Jane Doe" → "jane-doe"; used to match shorthand flags like --jane-doe.
+function flagKey(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function resolveCallerFlag(
+  flag: string,
+  callerOptions: string[],
+): string | "ambiguous" | "unknown" {
+  const key = flag.replace(/^--/, "");
+  const matches = callerOptions.filter((opt) => flagKey(opt) === key);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return "ambiguous";
+  return "unknown";
+}
+
+async function main(): Promise<void> {
+  const { target, caller: callerFlagValue, unresolvedFlags } =
+    parseCliArgs(process.argv.slice(2));
+  let caller: string | null = callerFlagValue;
 
   const apiKey = process.env.ATTIO_API_KEY;
   if (!apiKey || !apiKey.trim()) usage("ATTIO_API_KEY env var is not set");
@@ -271,6 +361,89 @@ async function main(): Promise<void> {
     console.log(`Processing ${csvPaths.length} CSV files from ${resolved}\n`);
   }
 
+  // Pre-parse all CSVs so we can validate select-attribute values (Call Status,
+  // Caller) against Attio's live option titles before we hit the API with any
+  // writes. Cheaper to fail fast than to watch every row 400.
+  const parsedFiles: ParsedCsv[] = [];
+  for (const csvPath of csvPaths) {
+    try {
+      parsedFiles.push(parseCsvFile(csvPath));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  Skipped: ${msg}`);
+    }
+  }
+
+  const [callStatusOptions, callerOptions] = await Promise.all([
+    listAttributeOptions(apiKey!, SLUG.callStatus).catch(() => [] as string[]),
+    listAttributeOptions(apiKey!, SLUG.caller).catch(() => [] as string[]),
+  ]);
+
+  // Resolve shorthand flags like --yuyang against live Caller options.
+  for (const flag of unresolvedFlags) {
+    if (callerOptions.length === 0) {
+      usage(
+        `unknown flag ${flag} (could not fetch Caller options to resolve shorthand flags)`,
+      );
+    }
+    const resolved = resolveCallerFlag(flag, callerOptions);
+    if (resolved === "unknown") {
+      console.error(`Error: unknown flag ${flag}.`);
+      console.error(
+        `  Caller shorthand flags available: ${callerOptions.map((o) => `--${flagKey(o)}`).join(", ")}`,
+      );
+      process.exit(1);
+    }
+    if (resolved === "ambiguous") {
+      console.error(
+        `Error: flag ${flag} matches multiple Caller options — use --caller "<name>" instead.`,
+      );
+      process.exit(1);
+    }
+    if (caller && caller !== resolved) {
+      console.error(
+        `Error: conflicting Caller values — "${caller}" (from --caller) vs "${resolved}" (from ${flag}).`,
+      );
+      process.exit(1);
+    }
+    caller = resolved;
+  }
+
+  if (caller) {
+    if (callerOptions.length === 0) {
+      console.log(
+        `Warning: could not fetch Caller options to validate --caller "${caller}". Proceeding anyway.`,
+      );
+    } else if (!callerOptions.includes(caller)) {
+      console.error(
+        `Error: --caller "${caller}" is not an existing Caller option in Attio.`,
+      );
+      console.error(`  Available: ${callerOptions.join(", ")}`);
+      process.exit(1);
+    }
+  }
+
+  if (callStatusOptions.length > 0) {
+    const seen = new Set<string>();
+    for (const pf of parsedFiles) {
+      for (const input of pf.inputs) {
+        const v = input.values[SLUG.callStatus];
+        if (typeof v === "string" && v) seen.add(v);
+      }
+    }
+    const unknown = [...seen].filter((v) => !callStatusOptions.includes(v));
+    if (unknown.length > 0) {
+      console.error(
+        `Error: Call Status (Result column) values not present in Attio: ${unknown.join(", ")}`,
+      );
+      console.error(`  Available: ${callStatusOptions.join(", ")}`);
+      console.error(
+        "  Add the missing options in Attio, or edit the CSV, then re-run.",
+      );
+      process.exit(1);
+    }
+  }
+
   const totals = {
     created: 0,
     updated: 0,
@@ -280,21 +453,11 @@ async function main(): Promise<void> {
     errors: [] as string[],
   };
 
-  for (const csvPath of csvPaths) {
+  for (const parsed of parsedFiles) {
     const header = isBatch
-      ? `\n─── ${path.basename(csvPath)} ───`
+      ? `\n─── ${parsed.filename} ───`
       : "";
     if (header) console.log(header);
-
-    let parsed: ParsedCsv;
-    try {
-      parsed = parseCsvFile(csvPath);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  Skipped: ${msg}`);
-      totals.errors.push(msg);
-      continue;
-    }
 
     console.log(
       `Parsed ${parsed.inputs.length} rows from ${parsed.filename}.` +
@@ -307,15 +470,35 @@ async function main(): Promise<void> {
         `Ignored ${parsed.unknownCols.length} unknown column${parsed.unknownCols.length === 1 ? "" : "s"}: ${parsed.unknownCols.join(", ")}`,
       );
     }
+    if (parsed.emailInFollowUp > 0) {
+      console.log(
+        `Note: ${parsed.emailInFollowUp} Follow-up Number value${parsed.emailInFollowUp === 1 ? "" : "s"} look${parsed.emailInFollowUp === 1 ? "s" : ""} like an email. Written to follow_up_number verbatim (Attio has no separate email column today).`,
+      );
+    }
     if (parsed.inputs.length === 0) continue;
+
+    // Stamp the CLI-level Caller on every row that doesn't already have one.
+    if (caller) {
+      for (const input of parsed.inputs) {
+        if (!input.values[SLUG.caller]) input.values[SLUG.caller] = caller;
+      }
+    }
 
     if (googleApiKey) {
       console.log(
         `Looking up state via Google Places for ${parsed.inputs.length} business${parsed.inputs.length === 1 ? "" : "es"}…`,
       );
       const enrichment = await enrichRowsWithState(parsed.inputs, googleApiKey);
+      const skippedPart =
+        enrichment.skippedOutOfRegion > 0
+          ? `; ${enrichment.skippedOutOfRegion} outside NY/TN (left blank)`
+          : "";
+      const errorPart =
+        enrichment.errors.length > 0
+          ? `; ${enrichment.errors.length} lookup error${enrichment.errors.length === 1 ? "" : "s"}`
+          : "";
       console.log(
-        `  → Filled Territory on ${enrichment.filled} of ${enrichment.lookedUp}${enrichment.errors.length > 0 ? `; ${enrichment.errors.length} lookup error${enrichment.errors.length === 1 ? "" : "s"}` : ""}.`,
+        `  → Filled Territory on ${enrichment.filled} of ${enrichment.lookedUp}${skippedPart}${errorPart}.`,
       );
       if (enrichment.errors.length > 0) {
         const shown = enrichment.errors.slice(0, 3);
