@@ -10,6 +10,7 @@ const ALLOWED: Record<string, string> = {
   territory: SLUG.territory,
   callStatus: SLUG.callStatus,
   stage: SLUG.stage,
+  caller: SLUG.caller,
 };
 
 export async function GET(req: Request) {
@@ -20,7 +21,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const attr = url.searchParams.get("attribute");
   if (!attr || !(attr in ALLOWED))
-    return NextResponse.json({ error: "attribute must be 'territory', 'callStatus', or 'stage'" }, { status: 400 });
+    return NextResponse.json({ error: "attribute must be 'territory', 'callStatus', 'stage', or 'caller'" }, { status: 400 });
 
   try {
     const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);

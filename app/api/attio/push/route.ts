@@ -25,13 +25,14 @@ export async function POST(req: Request) {
   const keywords = Array.isArray(b.keywords)
     ? b.keywords.filter((k): k is string => typeof k === "string")
     : [];
+  const caller = typeof b.caller === "string" && b.caller.trim() ? b.caller.trim() : null;
 
   if (!places || places.length === 0)
     return NextResponse.json({ error: "places array required" }, { status: 400 });
 
   try {
     const enrichment = await enrichPlacesWithIndustry(places, keywords);
-    const attio = await pushPlacesToAttio(gate.apiKey!, enrichment.places);
+    const attio = await pushPlacesToAttio(gate.apiKey!, enrichment.places, { caller });
     return NextResponse.json({
       ...attio,
       enrichedCount: enrichment.places.filter((p) => p.industry).length,

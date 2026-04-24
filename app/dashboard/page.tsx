@@ -237,11 +237,12 @@ export default function DashboardPage() {
           {data.sankey.nodes.length > 0 && (
             <div className="border border-neutral-200 rounded-lg p-5">
               <div className="text-[13px] font-medium mb-4">Lead flow</div>
-              <ResponsiveContainer width="100%" height={Math.max(480, data.sankey.nodes.length * 58)}>
+              <ResponsiveContainer width="100%" height={Math.max(720, data.sankey.nodes.length * 110)}>
                 <Sankey
                   data={data.sankey}
-                  nodePadding={14}
-                  nodeWidth={12}
+                  nodePadding={34}
+                  nodeWidth={14}
+                  margin={{ top: 24, right: 40, bottom: 24, left: 40 }}
                   link={(props: { sourceX?: number; sourceY?: number; sourceControlX?: number; targetX?: number; targetY?: number; targetControlX?: number; linkWidth?: number; index?: number }) => {
                     const { sourceX = 0, sourceY = 0, sourceControlX = 0, targetX = 0, targetY = 0, targetControlX = 0, linkWidth = 0, index = 0 } = props;
                     const link = data.sankey.links[index];

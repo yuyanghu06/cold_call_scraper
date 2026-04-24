@@ -151,33 +151,32 @@ function extractStreetLine(formattedAddress: string | null | undefined): string 
 }
 
 function buildLocationPayload(place: Place): Record<string, unknown> | null {
-  const street = extractStreetLine(place.address) ?? place.address ?? null;
-  const countryCode =
-    place.country && /^[A-Za-z]{2}$/.test(place.country)
-      ? place.country.toUpperCase()
-      : null;
+  // Attio's location attribute requires latitude/longitude to be finite
+  // numbers — sending null, omitting, or stringified values all come back as
+  // invalid_type 400. When Google Places doesn't return coordinates for a
+  // business, skip primary_location entirely; the raw address is still
+  // written separately via SLUG.address.
   const hasCoords =
     typeof place.latitude === "number" &&
     Number.isFinite(place.latitude) &&
     typeof place.longitude === "number" &&
     Number.isFinite(place.longitude);
-  // Attio rejects `latitude: null` with invalid_type; omit the keys entirely
-  // when we don't have a valid numeric pair.
-  const payload: Record<string, unknown> = {
+  if (!hasCoords) return null;
+
+  const street = extractStreetLine(place.address) ?? place.address ?? null;
+  const countryCode =
+    place.country && /^[A-Za-z]{2}$/.test(place.country)
+      ? place.country.toUpperCase()
+      : null;
+  return {
     line_1: street || null, line_2: null, line_3: null, line_4: null,
     locality: place.city ?? null,
     region: place.state ?? null,
     postcode: place.zip ?? null,
     country_code: countryCode,
+    latitude: place.latitude,
+    longitude: place.longitude,
   };
-  if (hasCoords) {
-    payload.latitude = place.latitude;
-    payload.longitude = place.longitude;
-  }
-  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && !hasCoords) {
-    return null;
-  }
-  return payload;
 }
 
 // ─── Payload builders ─────────────────────────────────────────────────────────
@@ -344,10 +343,12 @@ export async function listAttributeOptions(
 export async function pushPlacesToAttio(
   apiKey: string,
   places: Place[],
+  opts: { caller?: string | null } = {},
 ): Promise<AttioPushResult> {
   const result: AttioPushResult = { created: 0, updated: 0, skipped: 0, failed: 0, total: places.length, errors: [] };
   if (places.length === 0) return result;
 
+  const caller = opts.caller?.trim() || null;
   const pace = createPacer(PACE_INTERVAL_MS);
   const queue = [...places];
   const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
@@ -367,11 +368,16 @@ export async function pushPlacesToAttio(
         }
 
         if (!existing) {
-          await attioRequest(apiKey, "POST", "/objects/companies/records", { data: { values: buildCreateValues(p) } }, pace);
+          const values = buildCreateValues(p);
+          if (caller) values[SLUG.caller] = caller;
+          await attioRequest(apiKey, "POST", "/objects/companies/records", { data: { values } }, pace);
           result.created++;
         } else {
           const updates = buildUpdatePayload(p, existing.values);
           if (needsGoogleIdBackfill) updates[SLUG.googleId] = p.placeId;
+          if (caller && isFieldEmpty(existing.values[SLUG.caller])) {
+            updates[SLUG.caller] = caller;
+          }
           if (Object.keys(updates).length === 0) {
             result.skipped++;
           } else {
