@@ -151,11 +151,11 @@ function extractStreetLine(formattedAddress: string | null | undefined): string 
 }
 
 function buildLocationPayload(place: Place): Record<string, unknown> | null {
-  // Attio's location attribute requires latitude/longitude to be finite
-  // numbers — sending null, omitting, or stringified values all come back as
-  // invalid_type 400. When Google Places doesn't return coordinates for a
-  // business, skip primary_location entirely; the raw address is still
-  // written separately via SLUG.address.
+  // Attio's location attribute wants latitude/longitude as STRINGS
+  // (decimal-formatted), not numbers. Sending numbers comes back as
+  // `invalid_type` 400 on path ["latitude"]. If coords are missing entirely,
+  // skip primary_location; the raw address is still written separately via
+  // SLUG.address.
   const hasCoords =
     typeof place.latitude === "number" &&
     Number.isFinite(place.latitude) &&
@@ -174,8 +174,8 @@ function buildLocationPayload(place: Place): Record<string, unknown> | null {
     region: place.state ?? null,
     postcode: place.zip ?? null,
     country_code: countryCode,
-    latitude: place.latitude,
-    longitude: place.longitude,
+    latitude: String(place.latitude),
+    longitude: String(place.longitude),
   };
 }
 
