@@ -150,16 +150,25 @@ function buildLocationPayload(place: Place): Record<string, unknown> | null {
     place.country && /^[A-Za-z]{2}$/.test(place.country)
       ? place.country.toUpperCase()
       : null;
+  const hasCoords =
+    typeof place.latitude === "number" &&
+    Number.isFinite(place.latitude) &&
+    typeof place.longitude === "number" &&
+    Number.isFinite(place.longitude);
+  // Attio rejects `latitude: null` with invalid_type; omit the keys entirely
+  // when we don't have a valid numeric pair.
   const payload: Record<string, unknown> = {
     line_1: street || null, line_2: null, line_3: null, line_4: null,
     locality: place.city ?? null,
     region: place.state ?? null,
     postcode: place.zip ?? null,
     country_code: countryCode,
-    latitude: place.latitude ?? null,
-    longitude: place.longitude ?? null,
   };
-  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && payload.latitude === null) {
+  if (hasCoords) {
+    payload.latitude = place.latitude;
+    payload.longitude = place.longitude;
+  }
+  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && !hasCoords) {
     return null;
   }
   return payload;
