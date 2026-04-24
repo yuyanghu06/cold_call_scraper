@@ -32,6 +32,7 @@ export default function ManualCompanyForm() {
   const [result, setResult] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [followUpNumber, setFollowUpNumber] = useState("");
+  const [caller, setCaller] = useState("");
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [unlocked, setUnlocked] = useState(false);
@@ -112,6 +113,7 @@ export default function ManualCompanyForm() {
           result: result.trim() || null,
           ownerName: ownerName.trim() || null,
           followUpNumber: followUpNumber.trim() || null,
+          caller: caller.trim() || null,
           notes: notes.trim() || null,
         }),
       });
@@ -148,6 +150,7 @@ export default function ManualCompanyForm() {
       setResult("");
       setOwnerName("");
       setFollowUpNumber("");
+      setCaller("");
       setNotes("");
     } catch (err) {
       setStatus({
@@ -275,6 +278,20 @@ export default function ManualCompanyForm() {
               placeholder="+1 555 123 4567"
             />
           </div>
+        </div>
+
+        <div>
+          <label htmlFor="mcf-caller" className={LABEL_CLASS}>
+            Caller
+          </label>
+          <input
+            id="mcf-caller"
+            type="text"
+            className={INPUT_CLASS}
+            value={caller}
+            onChange={(e) => setCaller(e.target.value)}
+            placeholder="Who's making the calls"
+          />
         </div>
 
         <div>
