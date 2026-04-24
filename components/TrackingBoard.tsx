@@ -54,6 +54,8 @@ export default function TrackingBoard() {
   const [territoryFilter, setTerritoryFilter] = useState<string[]>([]);
   const [callStatusFilter, setCallStatusFilter] = useState<string[]>([]);
   const [industryFilter, setIndustryFilter] = useState<string[]>([]);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [rows, setRows] = useState<TrackingCompany[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadMoreAvailable, setLoadMoreAvailable] = useState(false);
@@ -110,6 +112,7 @@ export default function TrackingBoard() {
         for (const c of callStatusFilter)
           url.searchParams.append("callStatus", c);
         for (const i of industryFilter) url.searchParams.append("industry", i);
+        if (searchQuery) url.searchParams.set("search", searchQuery);
         url.searchParams.set("limit", String(PAGE_SIZE));
         url.searchParams.set("offset", String(opts.offset));
         const res = await fetch(url.toString(), { cache: "no-store" });
@@ -136,13 +139,19 @@ export default function TrackingBoard() {
         if (reqId.current === myReq) setLoading(false);
       }
     },
-    [territoryFilter, callStatusFilter, industryFilter],
+    [territoryFilter, callStatusFilter, industryFilter, searchQuery],
   );
 
   useEffect(() => {
     if (!unlocked) return;
     void fetchList({ append: false, offset: 0 });
   }, [unlocked, fetchList]);
+
+  // Debounce the search input so we don't hit Attio on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => setSearchQuery(searchInput.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
 
   function updateLocalRow(id: string, patch: Partial<TrackingCompany>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -182,13 +191,16 @@ export default function TrackingBoard() {
         territoryFilter={territoryFilter}
         callStatusFilter={callStatusFilter}
         industryFilter={industryFilter}
+        searchInput={searchInput}
         onTerritoryChange={setTerritoryFilter}
         onCallStatusChange={setCallStatusFilter}
         onIndustryChange={setIndustryFilter}
+        onSearchChange={setSearchInput}
         onClear={() => {
           setTerritoryFilter([]);
           setCallStatusFilter([]);
           setIndustryFilter([]);
+          setSearchInput("");
         }}
         count={rows.length}
         hasMore={loadMoreAvailable}
@@ -235,9 +247,11 @@ function FilterBar(props: {
   territoryFilter: string[];
   callStatusFilter: string[];
   industryFilter: string[];
+  searchInput: string;
   onTerritoryChange: (v: string[]) => void;
   onCallStatusChange: (v: string[]) => void;
   onIndustryChange: (v: string[]) => void;
+  onSearchChange: (v: string) => void;
   onClear: () => void;
   count: number;
   hasMore: boolean;
@@ -246,9 +260,22 @@ function FilterBar(props: {
   const hasActiveFilters =
     props.territoryFilter.length > 0 ||
     props.callStatusFilter.length > 0 ||
-    props.industryFilter.length > 0;
+    props.industryFilter.length > 0 ||
+    props.searchInput.length > 0;
   return (
     <div className="flex flex-wrap items-end gap-3 border border-neutral-300 p-3">
+      <label className="flex flex-col gap-1 min-w-[200px]">
+        <span className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
+          Search company
+        </span>
+        <input
+          type="text"
+          value={props.searchInput}
+          onChange={(e) => props.onSearchChange(e.target.value)}
+          placeholder="Name contains…"
+          className="border border-neutral-300 px-2 py-1 text-xs bg-white focus:outline-none focus:border-neutral-900"
+        />
+      </label>
       <MultiSelect
         label="Territory"
         value={props.territoryFilter}

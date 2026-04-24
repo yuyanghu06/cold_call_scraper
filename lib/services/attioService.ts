@@ -258,6 +258,11 @@ export async function listTrackingCompanies(
   addFilter(params.callStatus ?? [], SLUG.callStatus);
   addFilter(params.industry ?? [], SLUG.industry);
 
+  const searchTerm = (params.search ?? "").trim();
+  if (searchTerm) {
+    andClauses.push({ [SLUG.name]: { $contains: searchTerm } });
+  }
+
   const body: Record<string, unknown> = { limit, offset };
   if (andClauses.length === 1) body.filter = andClauses[0];
   else if (andClauses.length > 1) body.filter = { $and: andClauses };

@@ -27,6 +27,7 @@ export interface ListCompaniesParams {
   territory?: string[] | null;
   callStatus?: string[] | null;
   industry?: string[] | null;
+  search?: string | null;
   limit?: number;
   offset?: number;
 }

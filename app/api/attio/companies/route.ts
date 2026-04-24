@@ -27,13 +27,14 @@ export async function GET(req: Request) {
   const territory = readList(url.searchParams, "territory").map(normalizeTerritory);
   const callStatus = readList(url.searchParams, "callStatus");
   const industry = readList(url.searchParams, "industry");
+  const search = url.searchParams.get("search")?.trim() || null;
   const limitRaw = url.searchParams.get("limit");
   const offsetRaw = url.searchParams.get("offset");
   const limit = limitRaw ? Math.max(1, Math.min(500, Number(limitRaw))) : 100;
   const offset = offsetRaw ? Math.max(0, Number(offsetRaw)) : 0;
 
   try {
-    const result = await listTrackingCompanies(gate.apiKey!, { territory, callStatus, industry, limit, offset });
+    const result = await listTrackingCompanies(gate.apiKey!, { territory, callStatus, industry, search, limit, offset });
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
