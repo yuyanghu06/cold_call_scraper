@@ -4,11 +4,26 @@ import { useMemo, useState } from "react";
 import type { Place, SearchResponse } from "@/lib/types";
 import ProgressBar from "./ProgressBar";
 
+export type AttioStatus =
+  | { state: "idle" }
+  | { state: "pushing"; total: number }
+  | {
+      state: "done";
+      created: number;
+      updated: number;
+      skipped: number;
+      failed: number;
+      total: number;
+      errors: string[];
+    }
+  | { state: "error"; total: number; errors: string[] };
+
 interface Props {
   loading: boolean;
   statusMessage: string | null;
   error: string | null;
   result: SearchResponse | null;
+  attio: AttioStatus;
 }
 
 type SortKey =
@@ -64,6 +79,7 @@ export default function ResultsPanel({
   statusMessage,
   error,
   result,
+  attio,
 }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("reviewCount");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -164,6 +180,8 @@ export default function ResultsPanel({
           Download CSV
         </button>
       </div>
+
+      {attio.state !== "idle" && <AttioStatusBanner status={attio} />}
 
       {result.warnings.length > 0 && (
         <div className="border-l-2 border-neutral-900 pl-3 py-1 text-xs text-neutral-700">
@@ -363,5 +381,76 @@ function Th({
         </span>
       </button>
     </th>
+  );
+}
+
+interface AttioBannerView {
+  accent: string;
+  label: string;
+  message: string;
+  errors: string[];
+}
+
+function bannerView(status: AttioStatus): AttioBannerView | null {
+  if (status.state === "idle") return null;
+  if (status.state === "pushing") {
+    return {
+      accent: "text-neutral-700 bg-neutral-50 border-neutral-200",
+      label: "Pushing",
+      message: `Sending ${status.total} compan${status.total === 1 ? "y" : "ies"} to Attio…`,
+      errors: [],
+    };
+  }
+  if (status.state === "done") {
+    const ok = status.failed === 0;
+    const parts = [
+      `${status.created} new`,
+      `${status.updated} filled`,
+      `${status.skipped} unchanged`,
+    ];
+    if (status.failed > 0) parts.push(`${status.failed} failed`);
+    const breakdown = parts.join(" · ");
+    return {
+      accent: ok
+        ? "text-emerald-800 bg-emerald-50 border-emerald-200"
+        : "text-amber-800 bg-amber-50 border-amber-200",
+      label: ok ? "Synced" : "Partial",
+      message: ok
+        ? `Synced ${status.total} to Attio — ${breakdown}. Existing companies kept their manual edits; only empty fields were filled.`
+        : `Synced ${status.total - status.failed} of ${status.total} — ${breakdown}.`,
+      errors: status.errors.slice(0, 5),
+    };
+  }
+  return {
+    accent: "text-red-800 bg-red-50 border-red-200",
+    label: "Error",
+    message: "Push failed. Your leads are still available in the CSV below.",
+    errors: status.errors.slice(0, 5),
+  };
+}
+
+function AttioStatusBanner({ status }: { status: AttioStatus }) {
+  const view = bannerView(status);
+  if (!view) return null;
+  return (
+    <div
+      className={`border px-4 py-3 text-xs flex items-start gap-3 ${view.accent}`}
+    >
+      <span className="text-[10px] uppercase tracking-[0.14em] border px-2 py-0.5 shrink-0 mt-0.5">
+        Attio · {view.label}
+      </span>
+      <div className="space-y-1 leading-relaxed min-w-0">
+        <p>{view.message}</p>
+        {view.errors.length > 0 && (
+          <ul className="font-mono text-[11px] text-neutral-700 space-y-0.5">
+            {view.errors.map((e, i) => (
+              <li key={i} className="truncate" title={e}>
+                — {e}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import KeywordInput from "./KeywordInput";
 import ChainExcludeInput from "./ChainExcludeInput";
 import {
@@ -15,6 +15,49 @@ import {
   TWILIO_PRICE_PER_LOOKUP_USD,
 } from "@/lib/constants";
 import type { SearchRequest } from "@/lib/types";
+
+const CUSTOM_PRESETS_STORAGE_KEY = "microagi.customPresets";
+
+interface CustomPreset {
+  id: string;
+  label: string;
+  keywords: string[];
+  excludeChains: string[];
+  createdAt: number;
+}
+
+// Dropdown values are prefixed so we can distinguish built-ins from saved
+// presets without a second lookup (built-in IDs and custom IDs share no
+// namespace otherwise).
+const BUILTIN_PREFIX = "b:";
+const CUSTOM_PREFIX = "c:";
+
+function readCustomPresets(): CustomPreset[] {
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_PRESETS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is CustomPreset =>
+        !!p &&
+        typeof p === "object" &&
+        typeof (p as CustomPreset).id === "string" &&
+        typeof (p as CustomPreset).label === "string" &&
+        Array.isArray((p as CustomPreset).keywords) &&
+        Array.isArray((p as CustomPreset).excludeChains),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomPresets(presets: CustomPreset[]): void {
+  window.localStorage.setItem(
+    CUSTOM_PRESETS_STORAGE_KEY,
+    JSON.stringify(presets),
+  );
+}
 
 const MIN_RADIUS_KM = 1;
 const MAX_RADIUS_KM = Math.floor(MAX_RADIUS_METERS / 1000);
@@ -50,13 +93,98 @@ export default function SearchForm({ loading, onSubmit }: Props) {
   const [presetId, setPresetId] = useState<string>("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  function applyPreset(id: string) {
-    setPresetId(id);
-    if (!id) return;
-    const preset = INDUSTRY_PRESETS.find((p) => p.id === id);
-    if (!preset) return;
-    setKeywords(preset.keywords);
-    setExcludeChains(preset.excludeChains);
+  const [customPresets, setCustomPresets] = useState<CustomPreset[]>([]);
+  const [savingPreset, setSavingPreset] = useState(false);
+  const [newPresetName, setNewPresetName] = useState("");
+
+  useEffect(() => {
+    setCustomPresets(readCustomPresets());
+  }, []);
+
+  const selectedCustomPreset = useMemo(
+    () =>
+      presetId.startsWith(CUSTOM_PREFIX)
+        ? customPresets.find(
+            (p) => p.id === presetId.slice(CUSTOM_PREFIX.length),
+          ) ?? null
+        : null,
+    [presetId, customPresets],
+  );
+
+  function applyPreset(value: string) {
+    setPresetId(value);
+    if (!value) return;
+    if (value.startsWith(BUILTIN_PREFIX)) {
+      const id = value.slice(BUILTIN_PREFIX.length);
+      const preset = INDUSTRY_PRESETS.find((p) => p.id === id);
+      if (!preset) return;
+      setKeywords(preset.keywords);
+      setExcludeChains(preset.excludeChains);
+      return;
+    }
+    if (value.startsWith(CUSTOM_PREFIX)) {
+      const id = value.slice(CUSTOM_PREFIX.length);
+      const preset = customPresets.find((p) => p.id === id);
+      if (!preset) return;
+      setKeywords(preset.keywords);
+      setExcludeChains(preset.excludeChains);
+    }
+  }
+
+  function startSavingPreset() {
+    // Default the name to the selected built-in preset's label if one is
+    // loaded, so saving tweaks of a built-in is fast.
+    const seed =
+      presetId.startsWith(BUILTIN_PREFIX) && !selectedCustomPreset
+        ? INDUSTRY_PRESETS.find(
+            (p) => p.id === presetId.slice(BUILTIN_PREFIX.length),
+          )?.label ?? ""
+        : selectedCustomPreset?.label ?? "";
+    setNewPresetName(seed);
+    setSavingPreset(true);
+  }
+
+  function cancelSavingPreset() {
+    setSavingPreset(false);
+    setNewPresetName("");
+  }
+
+  function commitSavePreset() {
+    const trimmed = newPresetName.trim();
+    if (!trimmed) return;
+    // Overwrite any existing preset with the same case-insensitive name so
+    // re-saving under the same label updates in place.
+    const existing = customPresets.filter(
+      (p) => p.label.toLowerCase() !== trimmed.toLowerCase(),
+    );
+    const preset: CustomPreset = {
+      id: `cp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      label: trimmed,
+      keywords: [...keywords],
+      excludeChains: [...excludeChains],
+      createdAt: Date.now(),
+    };
+    const next = [...existing, preset].sort((a, b) =>
+      a.label.localeCompare(b.label),
+    );
+    writeCustomPresets(next);
+    setCustomPresets(next);
+    setPresetId(CUSTOM_PREFIX + preset.id);
+    setSavingPreset(false);
+    setNewPresetName("");
+  }
+
+  function deleteSelectedPreset() {
+    if (!selectedCustomPreset) return;
+    if (
+      !window.confirm(`Delete preset "${selectedCustomPreset.label}"?`)
+    ) {
+      return;
+    }
+    const next = customPresets.filter((p) => p.id !== selectedCustomPreset.id);
+    writeCustomPresets(next);
+    setCustomPresets(next);
+    setPresetId("");
   }
 
   const estimatedPhones = useMemo(() => {
@@ -166,15 +294,87 @@ export default function SearchForm({ loading, onSubmit }: Props) {
           onChange={(e) => applyPreset(e.target.value)}
         >
           <option value="">— Load preset (optional) —</option>
-          {INDUSTRY_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
+          {customPresets.length > 0 && (
+            <optgroup label="Saved">
+              {customPresets.map((p) => (
+                <option key={p.id} value={CUSTOM_PREFIX + p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label="Built-in">
+            {INDUSTRY_PRESETS.map((p) => (
+              <option key={p.id} value={BUILTIN_PREFIX + p.id}>
+                {p.label}
+              </option>
+            ))}
+          </optgroup>
         </select>
+
+        {savingPreset ? (
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="text"
+              autoFocus
+              value={newPresetName}
+              onChange={(e) => setNewPresetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitSavePreset();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelSavingPreset();
+                }
+              }}
+              placeholder="Preset name"
+              className={`${INPUT_CLASS} flex-1`}
+            />
+            <button
+              type="button"
+              onClick={commitSavePreset}
+              disabled={!newPresetName.trim()}
+              className="bg-neutral-900 hover:bg-black disabled:bg-neutral-400 text-white text-[11px] uppercase tracking-[0.12em] font-medium px-3 py-2 whitespace-nowrap"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={cancelSavingPreset}
+              className="text-[11px] uppercase tracking-[0.12em] text-neutral-500 hover:text-neutral-900 px-2"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 mt-2">
+            <button
+              type="button"
+              onClick={startSavingPreset}
+              disabled={keywords.length === 0 && excludeChains.length === 0}
+              className="text-[11px] uppercase tracking-[0.12em] text-neutral-500 hover:text-neutral-900 disabled:text-neutral-300 disabled:hover:text-neutral-300"
+            >
+              {selectedCustomPreset
+                ? "Save changes to preset"
+                : "Save current as preset"}
+            </button>
+            {selectedCustomPreset && (
+              <button
+                type="button"
+                onClick={deleteSelectedPreset}
+                className="text-[11px] uppercase tracking-[0.12em] text-neutral-500 hover:text-red-700"
+              >
+                Delete preset
+              </button>
+            )}
+          </div>
+        )}
+
         <p className="text-xs text-neutral-500 mt-1.5">
           Presets populate keywords and chain exclusions. Edit freely before
-          submitting.
+          submitting. Saved presets are stored in this browser only.
         </p>
       </div>
 
@@ -187,7 +387,7 @@ export default function SearchForm({ loading, onSubmit }: Props) {
 
       <ChainExcludeInput values={excludeChains} onChange={setExcludeChains} />
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label htmlFor="minReviews" className={LABEL_CLASS}>
             Min reviews

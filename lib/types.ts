@@ -33,6 +33,7 @@ export interface Place {
   longitude: number | null;
   phoneVerified?: boolean;
   phoneLineType?: string;
+  industry?: string;
   excludedReason?: string;
 }
 

@@ -126,6 +126,7 @@ function mapRawToPlace(raw: GooglePlaceRaw): Place | null {
 async function searchTextOnce(
   apiKey: string,
   body: Record<string, unknown>,
+  fieldMask: string = FIELD_MASK,
 ): Promise<SearchTextResponse> {
   const maxAttempts = 3;
   let lastError: unknown = null;
@@ -136,7 +137,7 @@ async function searchTextOnce(
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": FIELD_MASK,
+        "X-Goog-FieldMask": fieldMask,
       },
       body: JSON.stringify(body),
     });
@@ -213,6 +214,31 @@ export async function searchPlacesForKeyword(
   }
 
   return collected;
+}
+
+// Single-business lookup used by the CSV import script to populate
+// Territory. Queries Google Places with just the business name (plus
+// address if available for disambiguation) and returns the US state code
+// from administrative_area_level_1 (e.g. "NY"). Returns null when Google
+// has no match. Cheap: requests only the addressComponents field.
+export async function findStateByBusinessName(
+  apiKey: string,
+  name: string,
+  address?: string | null,
+): Promise<string | null> {
+  const query = address ? `${name} ${address}` : name;
+  const body = { textQuery: query, pageSize: 1, maxResultCount: 1 };
+  const response = await searchTextOnce(
+    apiKey,
+    body,
+    "places.addressComponents",
+  );
+  const first = response.places?.[0];
+  if (!first) return null;
+  return findAddressComponent(
+    first.addressComponents,
+    "administrative_area_level_1",
+  );
 }
 
 export async function searchPlacesParallel(

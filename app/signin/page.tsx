@@ -19,7 +19,7 @@ export default function SignInPage() {
               MicroAGI · Internal
             </div>
             <div className="text-lg font-medium tracking-tight">
-              Lead generation
+              B2B Lead Gen/Tracking
             </div>
           </div>
         </div>

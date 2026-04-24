@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "import-csv": "tsx scripts/import-attio-csv.ts",
+    "list-slugs": "tsx scripts/list-attio-slugs.ts"
   },
   "dependencies": {
     "next": "^15.0.0",
@@ -27,6 +29,7 @@
     "msw": "^2.6.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }
