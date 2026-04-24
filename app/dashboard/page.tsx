@@ -13,23 +13,31 @@ import {
 } from "recharts";
 import type { DashboardData, DashboardPeriod } from "@/lib/viewmodels/dashboardViewModel";
 
-// Fixed slots for structural nodes; outcomes get palette colors by index
-const SANKEY_FIXED: Record<string, string> = {
-  "Called": "#1a1a1a",
+// Semantic colors for known outcomes
+const SANKEY_COLORS: Record<string, string> = {
+  "Called":            "#1a1a1a",
+  "Interested":        "#22c55e",
+  "Not Interested":    "#ef4444",
+  "No Decision Maker": "#94a3b8",
+  "No Pick Up":        "#64748b",
+  "Callback later":    "#3b82f6",
+  "Send an email":     "#8b5cf6",
+  "Unknown":           "#d1d5db",
+  "Voicemail":         "#a78bfa",
+  "Connected":         "#22c55e",
 };
 
+// Clean neutral palette for any unknown statuses
 const SANKEY_PALETTE = [
-  "#22c55e", "#f97316", "#ef4444", "#a855f7",
-  "#06b6d4", "#f59e0b", "#8b5cf6", "#ec4899",
-  "#14b8a6", "#64748b",
+  "#60a5fa", "#f97316", "#a855f7", "#14b8a6",
+  "#f59e0b", "#ec4899", "#06b6d4", "#84cc16",
 ];
 
-// Cache assigned colors per node name so they stay stable across re-renders
 const sankeyColorCache = new Map<string, string>();
 let paletteIdx = 0;
 
 function sankeyColor(name: string): string {
-  if (SANKEY_FIXED[name]) return SANKEY_FIXED[name];
+  if (SANKEY_COLORS[name]) return SANKEY_COLORS[name];
   if (sankeyColorCache.has(name)) return sankeyColorCache.get(name)!;
   const color = SANKEY_PALETTE[paletteIdx % SANKEY_PALETTE.length];
   paletteIdx++;
@@ -234,7 +242,21 @@ export default function DashboardPage() {
                   data={data.sankey}
                   nodePadding={14}
                   nodeWidth={12}
-                  link={{ stroke: "#e5e7eb", strokeOpacity: 0.6 }}
+                  link={(props: { sourceX?: number; sourceY?: number; sourceControlX?: number; targetX?: number; targetY?: number; targetControlX?: number; linkWidth?: number; index?: number }) => {
+                    const { sourceX = 0, sourceY = 0, sourceControlX = 0, targetX = 0, targetY = 0, targetControlX = 0, linkWidth = 0, index = 0 } = props;
+                    const link = data.sankey.links[index];
+                    const targetNode = data.sankey.nodes[link?.target ?? 0];
+                    const color = sankeyColor(targetNode?.name ?? "");
+                    return (
+                      <path
+                        d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={linkWidth}
+                        strokeOpacity={0.15}
+                      />
+                    );
+                  }}
                   node={(props: {
                     x?: number; y?: number; width?: number; height?: number;
                     index?: number; payload?: { name?: string; value?: number };
