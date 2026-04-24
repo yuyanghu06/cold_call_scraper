@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterPlaces } from "@/lib/filter";
+import { filterPlaces } from "@/lib/utils/filter";
 import type { Place } from "@/lib/types";
 
 function makePlace(overrides: Partial<Place>): Place {

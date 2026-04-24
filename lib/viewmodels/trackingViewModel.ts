@@ -8,6 +8,8 @@ export interface TrackingCompany {
   ownerName: string | null;
   followUpNumber: string | null;
   notes: string | null;
+  caller: string | null;
+  createdAt: string | null;
 }
 
 export interface TrackingUpdate {

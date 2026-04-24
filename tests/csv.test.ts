@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { placesToCsv } from "@/lib/csv";
+import { placesToCsv } from "@/lib/utils/csv";
 import type { Place } from "@/lib/types";
 
 function makePlace(overrides: Partial<Place>): Place {

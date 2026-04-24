@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dedupPlaces } from "@/lib/dedup";
+import { dedupPlaces } from "@/lib/utils/dedup";
 import type { Place } from "@/lib/types";
 
 function makePlace(overrides: Partial<Place>): Place {

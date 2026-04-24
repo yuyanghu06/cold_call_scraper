@@ -1,9 +1,12 @@
 import {
   attioRequest,
   createPacer,
+  parseRetryAfter,
   type AttioRecord,
   type AttioValueEntry,
 } from "@/lib/clients/attioClient";
+
+export { parseRetryAfter };
 import type { Place } from "@/lib/types";
 import type {
   TrackingCompany,
@@ -31,6 +34,7 @@ export const SLUG = {
   followUpNumber: "follow_up_number",
   ownerName: "owner_name",
   notes: "notes",
+  caller: "caller",
 } as const;
 
 const US_STATE_ABBR_TO_NAME: Record<string, string> = {
@@ -132,6 +136,8 @@ function normalizeTrackingCompany(record: AttioRecord): TrackingCompany {
     ownerName: readText(v[SLUG.ownerName]),
     followUpNumber: readText(v[SLUG.followUpNumber]),
     notes: readText(v[SLUG.notes]),
+    caller: readText(v[SLUG.caller]) ?? readSelect(v[SLUG.caller]),
+    createdAt: record.created_at ?? null,
   };
 }
 

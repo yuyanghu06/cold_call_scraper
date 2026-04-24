@@ -34,8 +34,8 @@ import {
   pushCsvRowsToAttio,
   SLUG,
   type CsvUpsertInput,
-} from "../lib/attio";
-import { findStateByBusinessName } from "../lib/google-places";
+} from "../lib/services/attioService";
+import { findStateByBusinessName } from "../lib/services/searchService";
 
 // Map normalized CSV header → Attio slug. Headers are normalized via
 // `normalizeHeader` below (lowercased, non-alphanumerics → underscore).

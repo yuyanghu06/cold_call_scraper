@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeIndustry } from "@/lib/industry-enrichment";
+import { normalizeIndustry } from "@/lib/services/enrichmentService";
 
 describe("normalizeIndustry", () => {
   it("accepts a single lowercase word", () => {

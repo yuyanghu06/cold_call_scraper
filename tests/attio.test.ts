@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeTerritory, parseRetryAfter } from "@/lib/attio";
+import { normalizeTerritory, parseRetryAfter } from "@/lib/services/attioService";
 
 describe("parseRetryAfter", () => {
   it("parses integer seconds", () => {

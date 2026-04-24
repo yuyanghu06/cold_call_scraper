@@ -10,11 +10,11 @@ vi.mock("@/auth", () => ({
 
 // Also mock the heavy downstream libs so we never hit the network if something
 // about these assertions is wrong (defense in depth for the test itself).
-vi.mock("@/lib/geocode", () => ({
+vi.mock("@/lib/services/geocodeService", () => ({
   geocodeLocation: vi.fn(async () => ({ lat: 40.73, lng: -73.99 })),
   GeocodeNoMatchError: class extends Error {},
 }));
-vi.mock("@/lib/google-places", () => ({
+vi.mock("@/lib/services/searchService", () => ({
   searchPlacesParallel: vi.fn(async () => ({ results: [], errors: [] })),
 }));
 vi.mock("@/lib/twilio-lookup", () => ({
@@ -60,8 +60,8 @@ describe("POST /api/search — auth gate", () => {
 
   it("does not invoke the geocoder or Places client when unauthorized", async () => {
     authMock.mockResolvedValue(null);
-    const geocode = await import("@/lib/geocode");
-    const places = await import("@/lib/google-places");
+    const geocode = await import("@/lib/services/geocodeService");
+    const places = await import("@/lib/services/searchService");
 
     await POST(
       buildRequest({
