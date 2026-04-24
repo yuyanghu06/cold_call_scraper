@@ -218,6 +218,7 @@ export default function TrackingBoard() {
         territoryOptions={territoryOptions}
         callStatusOptions={callStatusOptions}
         onRowUpdated={updateLocalRow}
+        onAfterUpdate={() => void fetchList({ append: false, offset: 0 })}
       />
 
       <div className="flex items-center justify-between">
@@ -333,6 +334,7 @@ function CompaniesTable(props: {
   territoryOptions: string[];
   callStatusOptions: string[];
   onRowUpdated: (id: string, patch: Partial<TrackingCompany>) => void;
+  onAfterUpdate: () => void;
 }) {
   const [sort, setSort] = useState<SortState>(null);
 
@@ -421,6 +423,7 @@ function CompaniesTable(props: {
               territoryOptions={props.territoryOptions}
               callStatusOptions={props.callStatusOptions}
               onUpdated={(patch) => props.onRowUpdated(row.id, patch)}
+              onAfterUpdate={props.onAfterUpdate}
             />
           ))}
         </tbody>
@@ -508,6 +511,7 @@ function CompanyRow(props: {
   territoryOptions: string[];
   callStatusOptions: string[];
   onUpdated: (patch: Partial<TrackingCompany>) => void;
+  onAfterUpdate: () => void;
 }) {
   const [saving, setSaving] = useState<EditableField | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -536,6 +540,9 @@ function CompanyRow(props: {
       // Reflect what the server ended up storing (option titles may normalize).
       if (data.company) props.onUpdated(data.company);
       else props.onUpdated(patch);
+      // Re-query Attio so any row that no longer matches the active filters
+      // drops out of the visible list.
+      props.onAfterUpdate();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
