@@ -48,6 +48,7 @@ export async function PATCH(
   if (b.industry !== undefined) update.industry = readOptionalText(b.industry);
   if (b.address !== undefined) update.address = readOptionalText(b.address);
   if (b.ownerName !== undefined) update.ownerName = readOptionalText(b.ownerName);
+  if (b.companyNumber !== undefined) update.companyNumber = readOptionalText(b.companyNumber);
   if (b.followUpNumber !== undefined) update.followUpNumber = readOptionalText(b.followUpNumber);
   if (b.notes !== undefined) update.notes = readOptionalText(b.notes);
 

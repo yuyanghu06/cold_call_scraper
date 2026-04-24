@@ -6,6 +6,7 @@ export interface TrackingCompany {
   industry: string | null;
   address: string | null;
   ownerName: string | null;
+  companyNumber: string | null;
   followUpNumber: string | null;
   notes: string | null;
   caller: string | null;
@@ -19,6 +20,7 @@ export interface TrackingUpdate {
   industry?: string | null;
   address?: string | null;
   ownerName?: string | null;
+  companyNumber?: string | null;
   followUpNumber?: string | null;
   notes?: string | null;
 }
@@ -27,6 +29,7 @@ export interface ListCompaniesParams {
   territory?: string[] | null;
   callStatus?: string[] | null;
   industry?: string[] | null;
+  search?: string | null;
   limit?: number;
   offset?: number;
 }

@@ -134,6 +134,7 @@ function normalizeTrackingCompany(record: AttioRecord): TrackingCompany {
     industry: readText(v[SLUG.industry]) ?? readSelect(v[SLUG.industry]),
     address: readText(v[SLUG.address]),
     ownerName: readText(v[SLUG.ownerName]),
+    companyNumber: readText(v[SLUG.companyNumber]),
     followUpNumber: readText(v[SLUG.followUpNumber]),
     notes: readText(v[SLUG.notes]),
     caller: readText(v[SLUG.caller]) ?? readSelect(v[SLUG.caller]),
@@ -155,16 +156,25 @@ function buildLocationPayload(place: Place): Record<string, unknown> | null {
     place.country && /^[A-Za-z]{2}$/.test(place.country)
       ? place.country.toUpperCase()
       : null;
+  const hasCoords =
+    typeof place.latitude === "number" &&
+    Number.isFinite(place.latitude) &&
+    typeof place.longitude === "number" &&
+    Number.isFinite(place.longitude);
+  // Attio rejects `latitude: null` with invalid_type; omit the keys entirely
+  // when we don't have a valid numeric pair.
   const payload: Record<string, unknown> = {
     line_1: street || null, line_2: null, line_3: null, line_4: null,
     locality: place.city ?? null,
     region: place.state ?? null,
     postcode: place.zip ?? null,
     country_code: countryCode,
-    latitude: place.latitude ?? null,
-    longitude: place.longitude ?? null,
   };
-  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && payload.latitude === null) {
+  if (hasCoords) {
+    payload.latitude = place.latitude;
+    payload.longitude = place.longitude;
+  }
+  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && !hasCoords) {
     return null;
   }
   return payload;
@@ -263,6 +273,11 @@ export async function listTrackingCompanies(
   addFilter(params.callStatus ?? [], SLUG.callStatus);
   addFilter(params.industry ?? [], SLUG.industry);
 
+  const searchTerm = (params.search ?? "").trim();
+  if (searchTerm) {
+    andClauses.push({ [SLUG.name]: { $contains: searchTerm } });
+  }
+
   const body: Record<string, unknown> = { limit, offset };
   if (andClauses.length === 1) body.filter = andClauses[0];
   else if (andClauses.length > 1) body.filter = { $and: andClauses };
@@ -293,6 +308,7 @@ export async function updateTrackingCompany(
   if (update.industry !== undefined) values[SLUG.industry] = update.industry ?? "";
   if (update.address !== undefined) values[SLUG.address] = update.address ?? "";
   if (update.ownerName !== undefined) values[SLUG.ownerName] = update.ownerName ?? "";
+  if (update.companyNumber !== undefined) values[SLUG.companyNumber] = update.companyNumber ?? "";
   if (update.followUpNumber !== undefined) values[SLUG.followUpNumber] = update.followUpNumber ?? "";
   if (update.notes !== undefined) values[SLUG.notes] = update.notes ?? "";
 

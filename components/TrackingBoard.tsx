@@ -12,6 +12,7 @@ interface TrackingCompany {
   industry: string | null;
   address: string | null;
   ownerName: string | null;
+  companyNumber: string | null;
   followUpNumber: string | null;
   notes: string | null;
 }
@@ -53,6 +54,8 @@ export default function TrackingBoard() {
   const [territoryFilter, setTerritoryFilter] = useState<string[]>([]);
   const [callStatusFilter, setCallStatusFilter] = useState<string[]>([]);
   const [industryFilter, setIndustryFilter] = useState<string[]>([]);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [rows, setRows] = useState<TrackingCompany[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadMoreAvailable, setLoadMoreAvailable] = useState(false);
@@ -109,6 +112,7 @@ export default function TrackingBoard() {
         for (const c of callStatusFilter)
           url.searchParams.append("callStatus", c);
         for (const i of industryFilter) url.searchParams.append("industry", i);
+        if (searchQuery) url.searchParams.set("search", searchQuery);
         url.searchParams.set("limit", String(PAGE_SIZE));
         url.searchParams.set("offset", String(opts.offset));
         const res = await fetch(url.toString(), { cache: "no-store" });
@@ -135,13 +139,19 @@ export default function TrackingBoard() {
         if (reqId.current === myReq) setLoading(false);
       }
     },
-    [territoryFilter, callStatusFilter, industryFilter],
+    [territoryFilter, callStatusFilter, industryFilter, searchQuery],
   );
 
   useEffect(() => {
     if (!unlocked) return;
     void fetchList({ append: false, offset: 0 });
   }, [unlocked, fetchList]);
+
+  // Debounce the search input so we don't hit Attio on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => setSearchQuery(searchInput.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
 
   function updateLocalRow(id: string, patch: Partial<TrackingCompany>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -181,13 +191,16 @@ export default function TrackingBoard() {
         territoryFilter={territoryFilter}
         callStatusFilter={callStatusFilter}
         industryFilter={industryFilter}
+        searchInput={searchInput}
         onTerritoryChange={setTerritoryFilter}
         onCallStatusChange={setCallStatusFilter}
         onIndustryChange={setIndustryFilter}
+        onSearchChange={setSearchInput}
         onClear={() => {
           setTerritoryFilter([]);
           setCallStatusFilter([]);
           setIndustryFilter([]);
+          setSearchInput("");
         }}
         count={rows.length}
         hasMore={loadMoreAvailable}
@@ -205,6 +218,7 @@ export default function TrackingBoard() {
         territoryOptions={territoryOptions}
         callStatusOptions={callStatusOptions}
         onRowUpdated={updateLocalRow}
+        onAfterUpdate={() => void fetchList({ append: false, offset: 0 })}
       />
 
       <div className="flex items-center justify-between">
@@ -234,9 +248,11 @@ function FilterBar(props: {
   territoryFilter: string[];
   callStatusFilter: string[];
   industryFilter: string[];
+  searchInput: string;
   onTerritoryChange: (v: string[]) => void;
   onCallStatusChange: (v: string[]) => void;
   onIndustryChange: (v: string[]) => void;
+  onSearchChange: (v: string) => void;
   onClear: () => void;
   count: number;
   hasMore: boolean;
@@ -245,9 +261,22 @@ function FilterBar(props: {
   const hasActiveFilters =
     props.territoryFilter.length > 0 ||
     props.callStatusFilter.length > 0 ||
-    props.industryFilter.length > 0;
+    props.industryFilter.length > 0 ||
+    props.searchInput.length > 0;
   return (
     <div className="flex flex-wrap items-end gap-3 border border-neutral-300 p-3">
+      <label className="flex flex-col gap-1 min-w-[200px]">
+        <span className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
+          Search company
+        </span>
+        <input
+          type="text"
+          value={props.searchInput}
+          onChange={(e) => props.onSearchChange(e.target.value)}
+          placeholder="Name contains…"
+          className="border border-neutral-300 px-2 py-1 text-xs bg-white focus:outline-none focus:border-neutral-900"
+        />
+      </label>
       <MultiSelect
         label="Territory"
         value={props.territoryFilter}
@@ -288,6 +317,7 @@ type SortKey =
   | "industry"
   | "address"
   | "ownerName"
+  | "companyNumber"
   | "followUpNumber"
   | "notes";
 type SortDir = "asc" | "desc";
@@ -304,6 +334,7 @@ function CompaniesTable(props: {
   territoryOptions: string[];
   callStatusOptions: string[];
   onRowUpdated: (id: string, patch: Partial<TrackingCompany>) => void;
+  onAfterUpdate: () => void;
 }) {
   const [sort, setSort] = useState<SortState>(null);
 
@@ -366,6 +397,13 @@ function CompaniesTable(props: {
               Owner name
             </SortableTh>
             <SortableTh
+              sortKey="companyNumber"
+              sort={sort}
+              onToggle={toggleSort}
+            >
+              Company number
+            </SortableTh>
+            <SortableTh
               sortKey="followUpNumber"
               sort={sort}
               onToggle={toggleSort}
@@ -385,6 +423,7 @@ function CompaniesTable(props: {
               territoryOptions={props.territoryOptions}
               callStatusOptions={props.callStatusOptions}
               onUpdated={(patch) => props.onRowUpdated(row.id, patch)}
+              onAfterUpdate={props.onAfterUpdate}
             />
           ))}
         </tbody>
@@ -463,6 +502,7 @@ type EditableField =
   | "industry"
   | "address"
   | "ownerName"
+  | "companyNumber"
   | "followUpNumber"
   | "notes";
 
@@ -471,6 +511,7 @@ function CompanyRow(props: {
   territoryOptions: string[];
   callStatusOptions: string[];
   onUpdated: (patch: Partial<TrackingCompany>) => void;
+  onAfterUpdate: () => void;
 }) {
   const [saving, setSaving] = useState<EditableField | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -499,6 +540,9 @@ function CompanyRow(props: {
       // Reflect what the server ended up storing (option titles may normalize).
       if (data.company) props.onUpdated(data.company);
       else props.onUpdated(patch);
+      // Re-query Attio so any row that no longer matches the active filters
+      // drops out of the visible list.
+      props.onAfterUpdate();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -612,6 +656,20 @@ function CompanyRow(props: {
               "ownerName",
               { ownerName: next || null },
               { ownerName: next || null },
+            )
+          }
+        />
+      </td>
+      <td className="px-3 py-2 min-w-[150px] border-b border-neutral-200">
+        <TextCell
+          value={props.row.companyNumber ?? ""}
+          saving={saving === "companyNumber"}
+          placeholder="—"
+          onCommit={(next) =>
+            persist(
+              "companyNumber",
+              { companyNumber: next || null },
+              { companyNumber: next || null },
             )
           }
         />
