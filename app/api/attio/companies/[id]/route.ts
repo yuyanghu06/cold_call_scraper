@@ -51,6 +51,7 @@ export async function PATCH(
   if (b.companyNumber !== undefined) update.companyNumber = readOptionalText(b.companyNumber);
   if (b.followUpNumber !== undefined) update.followUpNumber = readOptionalText(b.followUpNumber);
   if (b.notes !== undefined) update.notes = readOptionalText(b.notes);
+  if (b.caller !== undefined) update.caller = readOptionalText(b.caller);
 
   try {
     const updated = await updateTrackingCompany(gate.apiKey!, id, update);

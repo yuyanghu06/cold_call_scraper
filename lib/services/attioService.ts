@@ -271,6 +271,7 @@ export async function listTrackingCompanies(
   );
   addFilter(params.callStatus ?? [], SLUG.callStatus);
   addFilter(params.industry ?? [], SLUG.industry);
+  addFilter(params.caller ?? [], SLUG.caller);
 
   const searchTerm = (params.search ?? "").trim();
   if (searchTerm) {
@@ -310,6 +311,7 @@ export async function updateTrackingCompany(
   if (update.companyNumber !== undefined) values[SLUG.companyNumber] = update.companyNumber ?? "";
   if (update.followUpNumber !== undefined) values[SLUG.followUpNumber] = update.followUpNumber ?? "";
   if (update.notes !== undefined) values[SLUG.notes] = update.notes ?? "";
+  if (update.caller !== undefined) values[SLUG.caller] = update.caller ?? "";
 
   if (Object.keys(values).length === 0) {
     const res = await attioRequest(apiKey, "GET", `/objects/companies/records/${recordId}`, undefined, pace);

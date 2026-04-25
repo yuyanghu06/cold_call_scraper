@@ -15,6 +15,7 @@ interface TrackingCompany {
   companyNumber: string | null;
   followUpNumber: string | null;
   notes: string | null;
+  caller: string | null;
 }
 
 interface ListResponse {
@@ -47,6 +48,7 @@ export default function TrackingBoard() {
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
   const [territoryOptions, setTerritoryOptions] = useState<string[]>([]);
   const [callStatusOptions, setCallStatusOptions] = useState<string[]>([]);
+  const [callerOptions, setCallerOptions] = useState<string[]>([]);
   // Industry is a free-text attribute in Attio — no options endpoint. Instead,
   // we accumulate the unique values seen in loaded rows. Grows as more rows
   // load; never shrinks when a filter is applied so the dropdown stays stable.
@@ -54,6 +56,7 @@ export default function TrackingBoard() {
   const [territoryFilter, setTerritoryFilter] = useState<string[]>([]);
   const [callStatusFilter, setCallStatusFilter] = useState<string[]>([]);
   const [industryFilter, setIndustryFilter] = useState<string[]>([]);
+  const [callerFilter, setCallerFilter] = useState<string[]>([]);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [rows, setRows] = useState<TrackingCompany[]>([]);
@@ -86,16 +89,20 @@ export default function TrackingBoard() {
 
   async function loadOptions() {
     try {
-      const [t, c] = await Promise.all([
+      const [t, c, ca] = await Promise.all([
         fetch("/api/attio/options?attribute=territory").then(
           (r) => r.json() as Promise<OptionsResponse>,
         ),
         fetch("/api/attio/options?attribute=callStatus").then(
           (r) => r.json() as Promise<OptionsResponse>,
         ),
+        fetch("/api/attio/options?attribute=caller").then(
+          (r) => r.json() as Promise<OptionsResponse>,
+        ),
       ]);
       if (t.options) setTerritoryOptions(t.options);
       if (c.options) setCallStatusOptions(c.options);
+      if (ca.options) setCallerOptions(ca.options);
     } catch {
       // non-fatal; dropdowns will just be empty
     }
@@ -112,6 +119,7 @@ export default function TrackingBoard() {
         for (const c of callStatusFilter)
           url.searchParams.append("callStatus", c);
         for (const i of industryFilter) url.searchParams.append("industry", i);
+        for (const c of callerFilter) url.searchParams.append("caller", c);
         if (searchQuery) url.searchParams.set("search", searchQuery);
         url.searchParams.set("limit", String(PAGE_SIZE));
         url.searchParams.set("offset", String(opts.offset));
@@ -139,7 +147,7 @@ export default function TrackingBoard() {
         if (reqId.current === myReq) setLoading(false);
       }
     },
-    [territoryFilter, callStatusFilter, industryFilter, searchQuery],
+    [territoryFilter, callStatusFilter, industryFilter, callerFilter, searchQuery],
   );
 
   useEffect(() => {
@@ -188,18 +196,22 @@ export default function TrackingBoard() {
         territoryOptions={territoryOptions}
         callStatusOptions={callStatusOptions}
         industryOptions={industryOptions}
+        callerOptions={callerOptions}
         territoryFilter={territoryFilter}
         callStatusFilter={callStatusFilter}
         industryFilter={industryFilter}
+        callerFilter={callerFilter}
         searchInput={searchInput}
         onTerritoryChange={setTerritoryFilter}
         onCallStatusChange={setCallStatusFilter}
         onIndustryChange={setIndustryFilter}
+        onCallerChange={setCallerFilter}
         onSearchChange={setSearchInput}
         onClear={() => {
           setTerritoryFilter([]);
           setCallStatusFilter([]);
           setIndustryFilter([]);
+          setCallerFilter([]);
           setSearchInput("");
         }}
         count={rows.length}
@@ -217,6 +229,7 @@ export default function TrackingBoard() {
         rows={rows}
         territoryOptions={territoryOptions}
         callStatusOptions={callStatusOptions}
+        callerOptions={callerOptions}
         onRowUpdated={updateLocalRow}
         onAfterUpdate={() => void fetchList({ append: false, offset: 0 })}
       />
@@ -245,13 +258,16 @@ function FilterBar(props: {
   territoryOptions: string[];
   callStatusOptions: string[];
   industryOptions: string[];
+  callerOptions: string[];
   territoryFilter: string[];
   callStatusFilter: string[];
   industryFilter: string[];
+  callerFilter: string[];
   searchInput: string;
   onTerritoryChange: (v: string[]) => void;
   onCallStatusChange: (v: string[]) => void;
   onIndustryChange: (v: string[]) => void;
+  onCallerChange: (v: string[]) => void;
   onSearchChange: (v: string) => void;
   onClear: () => void;
   count: number;
@@ -262,6 +278,7 @@ function FilterBar(props: {
     props.territoryFilter.length > 0 ||
     props.callStatusFilter.length > 0 ||
     props.industryFilter.length > 0 ||
+    props.callerFilter.length > 0 ||
     props.searchInput.length > 0;
   return (
     <div className="flex flex-wrap items-end gap-3 border border-neutral-300 p-3">
@@ -295,6 +312,12 @@ function FilterBar(props: {
         options={props.industryOptions}
         onChange={props.onIndustryChange}
       />
+      <MultiSelect
+        label="Caller"
+        value={props.callerFilter}
+        options={props.callerOptions}
+        onChange={props.onCallerChange}
+      />
       <button
         type="button"
         onClick={props.onClear}
@@ -319,7 +342,8 @@ type SortKey =
   | "ownerName"
   | "companyNumber"
   | "followUpNumber"
-  | "notes";
+  | "notes"
+  | "caller";
 type SortDir = "asc" | "desc";
 type SortState = { key: SortKey; dir: SortDir } | null;
 
@@ -333,6 +357,7 @@ function CompaniesTable(props: {
   rows: TrackingCompany[];
   territoryOptions: string[];
   callStatusOptions: string[];
+  callerOptions: string[];
   onRowUpdated: (id: string, patch: Partial<TrackingCompany>) => void;
   onAfterUpdate: () => void;
 }) {
@@ -387,6 +412,9 @@ function CompaniesTable(props: {
             <SortableTh sortKey="callStatus" sort={sort} onToggle={toggleSort}>
               Call status
             </SortableTh>
+            <SortableTh sortKey="caller" sort={sort} onToggle={toggleSort}>
+              Caller
+            </SortableTh>
             <SortableTh sortKey="industry" sort={sort} onToggle={toggleSort}>
               Industry
             </SortableTh>
@@ -422,6 +450,7 @@ function CompaniesTable(props: {
               row={row}
               territoryOptions={props.territoryOptions}
               callStatusOptions={props.callStatusOptions}
+              callerOptions={props.callerOptions}
               onUpdated={(patch) => props.onRowUpdated(row.id, patch)}
               onAfterUpdate={props.onAfterUpdate}
             />
@@ -504,12 +533,14 @@ type EditableField =
   | "ownerName"
   | "companyNumber"
   | "followUpNumber"
-  | "notes";
+  | "notes"
+  | "caller";
 
 function CompanyRow(props: {
   row: TrackingCompany;
   territoryOptions: string[];
   callStatusOptions: string[];
+  callerOptions: string[];
   onUpdated: (patch: Partial<TrackingCompany>) => void;
   onAfterUpdate: () => void;
 }) {
@@ -595,6 +626,17 @@ function CompanyRow(props: {
           saving={saving === "callStatus"}
           onChange={(next) =>
             persist("callStatus", { callStatus: next || null }, { callStatus: next || null })
+          }
+        />
+      </td>
+      <td className="px-3 py-2 min-w-[140px] border-b border-neutral-200">
+        <SingleSelectCell
+          value={props.row.caller ?? ""}
+          options={props.callerOptions}
+          placeholder="—"
+          saving={saving === "caller"}
+          onChange={(next) =>
+            persist("caller", { caller: next || null }, { caller: next || null })
           }
         />
       </td>
