@@ -100,6 +100,12 @@ function readMultiSelect(entries: AttioValueEntry[] | undefined): string[] {
   return entries.map(extractOptionTitle).filter((t): t is string => t !== null);
 }
 
+function readValueCreatedAt(entries: AttioValueEntry[] | undefined): string | null {
+  if (!entries || entries.length === 0) return null;
+  const ts = (entries[0] as { created_at?: string }).created_at;
+  return typeof ts === "string" && ts ? ts : null;
+}
+
 function readText(entries: AttioValueEntry[] | undefined): string | null {
   if (!entries || entries.length === 0) return null;
   for (const e of entries) {
@@ -138,7 +144,9 @@ function normalizeTrackingCompany(record: AttioRecord): TrackingCompany {
     followUpNumber: readText(v[SLUG.followUpNumber]),
     notes: readText(v[SLUG.notes]),
     caller: readText(v[SLUG.caller]) ?? readSelect(v[SLUG.caller]),
+    callStatusUpdatedAt: readValueCreatedAt(v[SLUG.callStatus]),
     createdAt: record.created_at ?? null,
+    updatedAt: record.updated_at ?? null,
   };
 }
 

@@ -10,7 +10,9 @@ export interface TrackingCompany {
   followUpNumber: string | null;
   notes: string | null;
   caller: string | null;
+  callStatusUpdatedAt: string | null;
   createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface TrackingUpdate {
