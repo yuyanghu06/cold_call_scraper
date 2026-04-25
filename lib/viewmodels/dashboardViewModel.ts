@@ -66,6 +66,15 @@ export interface RepStats {
   winRate: number;        // positive / totalCalls
 }
 
+export interface TimeOfDayRow {
+  hour: string;
+  totalCalls: number;
+  pickedUp: number;
+  won: number;
+  pickUpRate: number;
+  winRate: number;
+}
+
 export interface DashboardData {
   total: number;
   byCallStatus: Array<{ name: string; count: number }>;
@@ -77,6 +86,7 @@ export interface DashboardData {
   recentCalls: RecentCall[];
   repLeaderboard: RepStats[];
   industryInsights: IndustryInsightsData;
+  timeOfDay: TimeOfDayRow[];
   callerNames: string[];
   sankey: SankeyData;
   period: DashboardPeriod;
@@ -242,6 +252,38 @@ function buildCallsByHour(
 const POSITIVE_STATUSES = new Set(["Interested", "Demo Booked", "Connected"]);
 const NO_PICK_UP_STATUSES = new Set(["No Pick Up", "Unknown", "Voicemail"]);
 
+function buildTimeOfDay(companies: TrackingCompany[]): TimeOfDayRow[] {
+  // Only use records with a real call timestamp — createdAt is when the lead
+  // was added to Attio, not when the call happened, so it's not useful here.
+  const called = companies.filter(
+    (c) => c.callStatus && c.callStatus !== "Not called yet" && c.callStatusUpdatedAt,
+  );
+
+  const buckets = new Map<number, { total: number; pickedUp: number; won: number }>();
+  for (let h = 7; h <= 21; h++) buckets.set(h, { total: 0, pickedUp: 0, won: 0 });
+
+  for (const c of called) {
+    const ts = c.callStatusUpdatedAt!;
+    const h = new Date(ts).getHours();
+    if (!buckets.has(h)) continue;
+    const b = buckets.get(h)!;
+    b.total++;
+    if (!NO_PICK_UP_STATUSES.has(c.callStatus!)) b.pickedUp++;
+    if (POSITIVE_STATUSES.has(c.callStatus!)) b.won++;
+  }
+
+  return [...buckets.entries()]
+    .filter(([, b]) => b.total > 0)
+    .map(([h, b]) => ({
+      hour: h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`,
+      totalCalls: b.total,
+      pickedUp: b.pickedUp,
+      won: b.won,
+      pickUpRate: Math.round((b.pickedUp / b.total) * 100),
+      winRate: Math.round((b.won / b.total) * 100),
+    }));
+}
+
 function buildRepLeaderboard(companies: TrackingCompany[]): RepStats[] {
   const map = new Map<string, RepStats>();
 
@@ -383,6 +425,7 @@ export function buildDashboardViewModel(
     recentCalls: buildRecentCalls(filtered),
     repLeaderboard: buildRepLeaderboard(filtered),
     industryInsights: buildIndustryInsights(filtered),
+    timeOfDay: buildTimeOfDay(filtered),
     callerNames,
     sankey: buildSankey(countBy(filtered, "callStatus")),
     period,

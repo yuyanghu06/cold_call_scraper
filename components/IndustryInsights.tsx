@@ -3,11 +3,16 @@
 import { useState, useMemo } from "react";
 import type { IndustryInsightsData, IndustryStats } from "@/lib/viewmodels/dashboardViewModel";
 
-type SortKey = keyof Pick<IndustryStats, "industry" | "totalCalls" | "pickUpRate" | "deltaPickUp" | "winRate" | "deltaWin">;
+type SortKey = keyof Pick<IndustryStats, "industry" | "totalCalls" | "pickUpRate" | "pickedUp" | "deltaPickUp" | "winRate" | "won" | "deltaWin">;
 type SortDir = "asc" | "desc";
 
 const ROW_HEIGHT = 49; // px per row
 const VISIBLE_ROWS = 10;
+
+// Interpolate from neutral gray → green based on 0–100 scale
+function rateColor(pct: number): string {
+  return pct >= 50 ? "#22c55e" : "#ef4444";
+}
 
 function Delta({ value }: { value: number }) {
   if (value === 0) return <span className="text-neutral-300 tabular-nums text-[12px]">—</span>;
@@ -19,15 +24,22 @@ function Delta({ value }: { value: number }) {
   );
 }
 
-function RateCell({ rate, raw, total, color }: { rate: number; raw: number; total: number; color: string }) {
+function RateBar({ rate, color }: { rate: number; color: string }) {
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <span className="tabular-nums text-[13px] w-9 text-right shrink-0">{rate}%</span>
+      <span className="tabular-nums text-[13px] text-neutral-800 w-9 text-right shrink-0">{rate}%</span>
       <div className="flex-1 bg-neutral-100 rounded-full h-1.5">
         <div className="h-1.5 rounded-full" style={{ width: `${rate}%`, background: color }} />
       </div>
-      <span className="tabular-nums text-[11px] text-neutral-400 shrink-0 whitespace-nowrap">{raw}/{total}</span>
     </div>
+  );
+}
+
+function RawCount({ raw, total }: { raw: number; total: number }) {
+  return (
+    <span className="tabular-nums text-[12px] text-neutral-700 whitespace-nowrap">
+      {raw}<span className="text-neutral-400">/{total}</span>
+    </span>
   );
 }
 
@@ -79,12 +91,8 @@ export default function IndustryInsights({ insights }: Props) {
 
   return (
     <div className="border border-neutral-200 rounded-lg overflow-hidden">
-      <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
+      <div className="px-5 py-4 border-b border-neutral-100">
         <span className="text-[13px] font-medium">Industry insights</span>
-        <div className="flex items-center gap-5 text-[12px] text-neutral-500">
-          <span>Avg pick-up <span className="font-semibold text-neutral-800 tabular-nums">{avgPickUpRate}%</span></span>
-          <span>Avg win rate <span className="font-semibold text-neutral-800 tabular-nums">{avgWinRate}%</span></span>
-        </div>
       </div>
 
       <div className="overflow-y-auto" style={{ maxHeight: ROW_HEIGHT * VISIBLE_ROWS + 41 }}>
@@ -93,10 +101,24 @@ export default function IndustryInsights({ insights }: Props) {
             <tr className="border-b border-neutral-100 bg-neutral-50 text-left">
               <ColHeader label="Industry" sortK="industry" />
               <ColHeader label="Calls" sortK="totalCalls" right />
-              <th className="px-4 py-2.5 text-[11px] uppercase tracking-widest text-neutral-400 font-normal w-52">Pick-up rate</th>
-              <ColHeader label="Δ avg" sortK="deltaPickUp" />
-              <th className="px-4 py-2.5 text-[11px] uppercase tracking-widest text-neutral-400 font-normal w-52">Win rate</th>
-              <ColHeader label="Δ avg" sortK="deltaWin" />
+              <ColHeader label="Pick-up rate" sortK="pickUpRate" />
+              <th onClick={() => handleSort("deltaPickUp")}
+                className="px-4 py-2.5 text-[11px] uppercase tracking-widest text-neutral-400 font-normal cursor-pointer select-none hover:text-neutral-700 whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">
+                  Δ avg <span className="text-black normal-case font-bold">({avgPickUpRate}%)</span>
+                  <SortIcon active={sortKey === "deltaPickUp"} dir={sortDir} />
+                </span>
+              </th>
+              <ColHeader label="Picked up" sortK="pickedUp" />
+              <ColHeader label="Win rate" sortK="winRate" />
+              <th onClick={() => handleSort("deltaWin")}
+                className="px-4 py-2.5 text-[11px] uppercase tracking-widest text-neutral-400 font-normal cursor-pointer select-none hover:text-neutral-700 whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">
+                  Δ avg <span className="text-black normal-case font-bold">({avgWinRate}%)</span>
+                  <SortIcon active={sortKey === "deltaWin"} dir={sortDir} />
+                </span>
+              </th>
+              <ColHeader label="Won" sortK="won" />
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100">
@@ -104,10 +126,12 @@ export default function IndustryInsights({ insights }: Props) {
               <tr key={row.industry} className="hover:bg-neutral-50 transition-colors">
                 <td className="px-5 py-3 font-medium">{row.industry}</td>
                 <td className="px-4 py-3 text-right tabular-nums text-neutral-500">{row.totalCalls.toLocaleString()}</td>
-                <td className="px-4 py-3"><RateCell rate={row.pickUpRate} raw={row.pickedUp} total={row.totalCalls} color="#60a5fa" /></td>
+                <td className="px-4 py-3"><RateBar rate={row.pickUpRate} color="#60a5fa" /></td>
                 <td className="px-4 py-3"><Delta value={row.deltaPickUp} /></td>
-                <td className="px-4 py-3"><RateCell rate={row.winRate} raw={row.won} total={row.totalCalls} color="#22c55e" /></td>
-                <td className="px-5 py-3"><Delta value={row.deltaWin} /></td>
+                <td className="px-4 py-3"><RawCount raw={row.pickedUp} total={row.totalCalls} /></td>
+                <td className="px-4 py-3"><RateBar rate={row.winRate} color="#22c55e" /></td>
+                <td className="px-4 py-3"><Delta value={row.deltaWin} /></td>
+                <td className="px-5 py-3"><RawCount raw={row.won} total={row.totalCalls} /></td>
               </tr>
             ))}
           </tbody>

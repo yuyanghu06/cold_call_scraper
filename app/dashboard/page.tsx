@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import {
   LineChart,
   Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -116,7 +118,7 @@ export default function DashboardPage() {
     : null;
 
   return (
-    <main className="max-w-6xl mx-auto px-6 py-8">
+    <main className="px-6 py-8">
       {/* Header: title + rep pills + period filter all on one line */}
       <div className="flex items-center justify-between mb-8 gap-4">
         <div className="shrink-0">
@@ -215,12 +217,11 @@ export default function DashboardPage() {
           {data.sankey.nodes.length > 0 && (
             <div className="border border-neutral-200 rounded-lg p-5">
               <div className="text-[13px] font-medium mb-4">Lead flow</div>
-              <ResponsiveContainer width="100%" height={Math.max(720, data.sankey.nodes.length * 110)}>
+              <ResponsiveContainer width="100%" height={Math.max(380, data.sankey.nodes.length * 46)}>
                 <Sankey
                   data={data.sankey}
-                  nodePadding={34}
-                  nodeWidth={14}
-                  margin={{ top: 24, right: 40, bottom: 24, left: 40 }}
+                  nodePadding={16}
+                  nodeWidth={8}
                   link={(props: { sourceX?: number; sourceY?: number; sourceControlX?: number; targetX?: number; targetY?: number; targetControlX?: number; linkWidth?: number; index?: number }) => {
                     const { sourceX = 0, sourceY = 0, sourceControlX = 0, targetX = 0, targetY = 0, targetControlX = 0, linkWidth = 0, index = 0 } = props;
                     const link = data.sankey.links[index];
@@ -278,7 +279,7 @@ export default function DashboardPage() {
           )}
 
           {/* Calls per day by rep */}
-          <div className="border border-neutral-200 rounded-lg p-5 lg:col-start-2">
+          <div className="border border-neutral-200 rounded-lg p-5 flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <div className="text-[13px] font-medium">Calls per day</div>
               <div className="flex items-center gap-3">
@@ -291,35 +292,75 @@ export default function DashboardPage() {
               </div>
             </div>
             {data.callerNames.length === 0 ? (
-              <div className="h-[220px] flex items-center justify-center text-sm text-neutral-400">
-                No caller data yet — make sure the Caller field is filled in Attio
+              <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">
+                No caller data yet
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={data.callsByDay} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                  <Tooltip content={<BarTooltip />} />
-                  {data.callerNames.map((name, i) => (
-                    <Line
-                      key={name}
-                      type="monotone"
-                      dataKey={name}
-                      stroke={repColor(i)}
-                      strokeWidth={2}
-                      dot={{ r: 3, fill: repColor(i), strokeWidth: 0 }}
-                      activeDot={{ r: 5 }}
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
+              <div className="flex-1 min-h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data.callsByDay} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip content={<BarTooltip />} />
+                    {data.callerNames.map((name, i) => (
+                      <Line key={name} type="monotone" dataKey={name} stroke={repColor(i)} strokeWidth={2}
+                        dot={{ r: 3, fill: repColor(i), strokeWidth: 0 }} activeDot={{ r: 5 }} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
             )}
           </div>
 
           </div>{/* end 2-col grid */}
 
           <IndustryInsights insights={data.industryInsights} />
-          <RecentCallsTable calls={data.recentCalls} loading={loading} />
+
+          {/* Time of day */}
+          <div className="border border-neutral-200 rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-[13px] font-medium">Calls by time of day</div>
+              <div className="flex items-center gap-4 text-[12px] text-neutral-500">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-blue-400" /> Pick-up rate</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-green-500" /> Win rate</span>
+              </div>
+            </div>
+            {data.timeOfDay.length === 0 ? (
+              <div className="h-[220px] flex items-center justify-center text-sm text-neutral-400">
+                No timestamped call data — pick-up times will appear once Attio records call status change times
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={data.timeOfDay} margin={{ left: 0, right: 8, top: 8, bottom: 0 }} barCategoryGap="30%">
+                  <XAxis dataKey="hour" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
+                  <Tooltip
+                    cursor={{ fill: "#f5f5f5" }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const row = data.timeOfDay.find((r) => r.hour === label);
+                      return (
+                        <div className="bg-white border border-neutral-200 rounded px-3 py-2 text-sm shadow-sm">
+                          <div className="font-medium mb-1">{label} <span className="text-neutral-400 font-normal">({row?.totalCalls} calls)</span></div>
+                          {payload.map((p) => (
+                            <div key={String(p.dataKey)} className="flex items-center justify-between gap-4">
+                              <span className="flex items-center gap-1.5 text-neutral-600">
+                                <span className="w-2 h-2 rounded-sm inline-block" style={{ background: p.fill as string }} />
+                                {p.dataKey === "pickUpRate" ? "Pick-up" : "Win rate"}
+                              </span>
+                              <span className="font-medium">{p.value}% <span className="text-neutral-400 font-normal text-xs">({p.dataKey === "pickUpRate" ? row?.pickedUp : row?.won}/{row?.totalCalls})</span></span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }}
+                  />
+                  <Bar dataKey="pickUpRate" fill="#60a5fa" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="winRate" fill="#22c55e" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
 
         </div>
       )}

@@ -88,33 +88,14 @@ export default function RecentCallsTable({ calls, loading }: Props) {
   }
 
   const Pagination = () => (
-    <div className="flex items-center gap-1">
-      <span className="text-[12px] text-neutral-400 mr-2 tabular-nums">
+    <div className="flex items-center gap-2">
+      <span className="text-[12px] text-neutral-400 tabular-nums">
         {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sorted.length)} of {sorted.length}
       </span>
-      <button
-        onClick={() => setPage((p) => Math.max(0, p - 1))}
-        disabled={page === 0}
-        className="px-2.5 py-1 text-[12px] rounded border border-neutral-200 text-neutral-500 hover:text-neutral-900 disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        ←
-      </button>
-      {Array.from({ length: totalPages }, (_, i) => (
-        <button
-          key={i}
-          onClick={() => setPage(i)}
-          className={`w-7 h-7 text-[12px] rounded ${page === i ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"}`}
-        >
-          {i + 1}
-        </button>
-      ))}
-      <button
-        onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-        disabled={page === totalPages - 1}
-        className="px-2.5 py-1 text-[12px] rounded border border-neutral-200 text-neutral-500 hover:text-neutral-900 disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        →
-      </button>
+      <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
+        className="px-2.5 py-1 text-[12px] rounded border border-neutral-200 text-neutral-500 hover:text-neutral-900 disabled:opacity-30 disabled:cursor-not-allowed">←</button>
+      <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page === totalPages - 1}
+        className="px-2.5 py-1 text-[12px] rounded border border-neutral-200 text-neutral-500 hover:text-neutral-900 disabled:opacity-30 disabled:cursor-not-allowed">→</button>
     </div>
   );
 

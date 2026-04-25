@@ -13,7 +13,7 @@ const TABS: Array<{ href: string; label: string; match: (p: string) => boolean }
 export default function NavTabs() {
   const pathname = usePathname() || "/dashboard";
   return (
-    <nav className="flex flex-col gap-0.5">
+    <nav className="flex items-center gap-1">
       {TABS.map((t) => {
         const active = t.match(pathname);
         return (
@@ -22,8 +22,8 @@ export default function NavTabs() {
             href={t.href}
             className={
               active
-                ? "text-[13px] font-medium tracking-tight text-neutral-900 bg-neutral-100 rounded px-2.5 py-1.5"
-                : "text-[13px] tracking-tight text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50 rounded px-2.5 py-1.5"
+                ? "text-[13px] font-medium tracking-tight text-neutral-900 px-3 py-1.5 rounded-md bg-neutral-100"
+                : "text-[13px] tracking-tight text-neutral-500 hover:text-neutral-900 px-3 py-1.5 rounded-md hover:bg-neutral-50"
             }
           >
             {t.label}

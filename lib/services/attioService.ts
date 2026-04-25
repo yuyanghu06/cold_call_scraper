@@ -102,7 +102,8 @@ function readMultiSelect(entries: AttioValueEntry[] | undefined): string[] {
 
 function readValueCreatedAt(entries: AttioValueEntry[] | undefined): string | null {
   if (!entries || entries.length === 0) return null;
-  const ts = (entries[0] as { created_at?: string }).created_at;
+  const e = entries[0] as { created_at?: string; active_from?: string };
+  const ts = e.active_from ?? e.created_at;
   return typeof ts === "string" && ts ? ts : null;
 }
 
