@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import {
   createAttributeOption,
   listAttributeOptions,
   SLUG,
 } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
@@ -18,8 +17,7 @@ const ALLOWED: Record<string, string> = {
 };
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const url = new URL(req.url);
@@ -28,7 +26,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "attribute must be 'territory', 'callStatus', 'stage', or 'caller'" }, { status: 400 });
 
   try {
-    const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);
+    const options = await listAttributeOptions(gate.apiKey, ALLOWED[attr]);
     return NextResponse.json({ options });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -37,8 +35,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   let body: unknown;
@@ -62,8 +59,8 @@ export async function POST(req: Request) {
   }
 
   try {
-    const created = await createAttributeOption(gate.apiKey!, ALLOWED[attr], title);
-    const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);
+    const created = await createAttributeOption(gate.apiKey, ALLOWED[attr], title);
+    const options = await listAttributeOptions(gate.apiKey, ALLOWED[attr]);
     return NextResponse.json({ created, options });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -8,6 +8,18 @@ vi.mock("@/auth", () => ({
   auth: authMock,
 }));
 
+// `authedUserFromRequest` (used by the route via @/lib/mobileAuth) calls
+// `hasUnlockCookie()` from `@/lib/attio-unlock`, which reads `next/headers`'
+// `cookies()`. That requires a Next.js request scope, which doesn't exist in
+// these unit tests. Stub the cookie reader so the auth fallback path works.
+vi.mock("@/lib/attio-unlock", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/attio-unlock")>(
+      "@/lib/attio-unlock",
+    );
+  return { ...actual, hasUnlockCookie: vi.fn(async () => false) };
+});
+
 // Also mock the heavy downstream libs so we never hit the network if something
 // about these assertions is wrong (defense in depth for the test itself).
 vi.mock("@/lib/services/geocodeService", () => ({

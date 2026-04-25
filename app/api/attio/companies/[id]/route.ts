@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { updateTrackingCompany } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 import type { TrackingUpdate } from "@/lib/viewmodels/trackingViewModel";
 
 export const maxDuration = 60;
@@ -11,8 +10,7 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const { id } = await params;
@@ -54,7 +52,7 @@ export async function PATCH(
   if (b.caller !== undefined) update.caller = readOptionalText(b.caller);
 
   try {
-    const updated = await updateTrackingCompany(gate.apiKey!, id, update);
+    const updated = await updateTrackingCompany(gate.apiKey, id, update);
     return NextResponse.json({ company: updated });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

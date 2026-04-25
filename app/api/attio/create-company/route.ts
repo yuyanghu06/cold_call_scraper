@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { normalizeTerritory, pushCsvRowsToAttio, SLUG } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -13,8 +12,7 @@ function asString(v: unknown): string | null {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   let body: unknown;
@@ -46,7 +44,7 @@ export async function POST(req: Request) {
   if (notes) values[SLUG.notes] = notes;
 
   try {
-    const outcome = await pushCsvRowsToAttio(gate.apiKey!, [{ values }]);
+    const outcome = await pushCsvRowsToAttio(gate.apiKey, [{ values }]);
     return NextResponse.json(outcome);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
