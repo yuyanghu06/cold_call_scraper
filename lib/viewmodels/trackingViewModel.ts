@@ -25,12 +25,14 @@ export interface TrackingUpdate {
   companyNumber?: string | null;
   followUpNumber?: string | null;
   notes?: string | null;
+  caller?: string | null;
 }
 
 export interface ListCompaniesParams {
   territory?: string[] | null;
   callStatus?: string[] | null;
   industry?: string[] | null;
+  caller?: string[] | null;
   search?: string | null;
   limit?: number;
   offset?: number;

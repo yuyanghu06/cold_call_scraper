@@ -27,6 +27,7 @@ export async function GET(req: Request) {
   const territory = readList(url.searchParams, "territory").map(normalizeTerritory);
   const callStatus = readList(url.searchParams, "callStatus");
   const industry = readList(url.searchParams, "industry");
+  const caller = readList(url.searchParams, "caller");
   const search = url.searchParams.get("search")?.trim() || null;
   const limitRaw = url.searchParams.get("limit");
   const offsetRaw = url.searchParams.get("offset");
@@ -34,7 +35,7 @@ export async function GET(req: Request) {
   const offset = offsetRaw ? Math.max(0, Number(offsetRaw)) : 0;
 
   try {
-    const result = await listTrackingCompanies(gate.apiKey!, { territory, callStatus, industry, search, limit, offset });
+    const result = await listTrackingCompanies(gate.apiKey!, { territory, callStatus, industry, caller, search, limit, offset });
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

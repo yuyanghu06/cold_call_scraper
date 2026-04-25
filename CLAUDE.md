@@ -438,6 +438,65 @@ Test command: `npm test`. Run before every PR.
 
 Custom domain (optional): something like `leads.micro-agi.com`.
 
+## Attio Companies attribute slugs
+
+This is the live mapping of every non-archived attribute on Attio's Companies object — display name, API slug, and type. Mirror it in `SLUG` in `lib/services/attioService.ts`. To regenerate, run `npm run list-slugs` (script: `scripts/list-attio-slugs.ts`, calls `GET /v2/objects/companies/attributes`).
+
+| Display name                 | Slug                                   | Type              |
+| ---------------------------- | -------------------------------------- | ----------------- |
+| Record ID                    | `record_id`                            | text              |
+| Domains                      | `domains`                              | domain            |
+| Name                         | `name`                                 | text              |
+| Description                  | `description`                          | text              |
+| Team                         | `team`                                 | record-reference  |
+| Categories                   | `categories`                           | select            |
+| Primary location             | `primary_location`                     | location          |
+| Logo URL                     | `logo_url`                             | text              |
+| AngelList                    | `angellist`                            | text              |
+| Facebook                     | `facebook`                             | text              |
+| Instagram                    | `instagram`                            | text              |
+| LinkedIn                     | `linkedin`                             | text              |
+| Twitter                      | `twitter`                              | text              |
+| Twitter follower count       | `twitter_follower_count`               | number            |
+| Estimated ARR                | `estimated_arr_usd`                    | select            |
+| Funding raised               | `funding_raised_usd`                   | currency          |
+| Foundation date              | `foundation_date`                      | date              |
+| Employee range               | `employee_range`                       | select            |
+| First calendar interaction   | `first_calendar_interaction`           | interaction       |
+| Last calendar interaction    | `last_calendar_interaction`            | interaction       |
+| Next calendar interaction    | `next_calendar_interaction`            | interaction       |
+| First email interaction      | `first_email_interaction`              | interaction       |
+| Last email interaction       | `last_email_interaction`               | interaction       |
+| First interaction            | `first_interaction`                    | interaction       |
+| Last interaction             | `last_interaction`                     | interaction       |
+| Next interaction             | `next_interaction`                     | interaction       |
+| Connection strength (legacy) | `strongest_connection_strength_legacy` | number            |
+| Connection strength          | `strongest_connection_strength`        | select            |
+| Strongest connection         | `strongest_connection_user`            | actor-reference   |
+| Associated deals             | `associated_deals`                     | record-reference  |
+| Created at                   | `created_at`                           | timestamp         |
+| Created by                   | `created_by`                           | actor-reference   |
+| Headcount                    | `headcount`                            | number            |
+| Operations Lead              | `operations_lead`                      | record-reference  |
+| Territory                    | `territory`                            | select            |
+| Payout Split                 | `payout_split`                         | text              |
+| Stage                        | `stage`                                | select            |
+| Signed?                      | `signed`                               | select            |
+| Warmth                       | `warmth`                               | select            |
+| Industry                     | `industry`                             | text              |
+| GoogleID                     | `googleid`                             | text              |
+| Call Status                  | `call_status`                          | select            |
+| Follow-up Contact            | `follow_up_number`                     | text              |
+| Owner Name                   | `owner_name`                           | text              |
+| Notes                        | `notes`                                | text              |
+| Address                      | `address`                              | text              |
+| Company Number               | `store_number`                         | text              |
+| Caller                       | `caller`                               | select            |
+
+Notes:
+- `select` attributes reject arbitrary strings — writes must match an existing option title exactly, or Attio returns 400. Use `GET /v2/objects/companies/attributes/<slug>/options` (or the `/api/attio/options` endpoint) to fetch the live list before writing.
+- `location` attributes (e.g. `primary_location`) take a structured object (`line_1..line_4, locality, region, postcode, country_code, latitude, longitude`). Omit `latitude`/`longitude` rather than sending `null` — Attio rejects null with `invalid_type`.
+
 ## Future (not v1)
 
 Build only if asked. These are parked ideas, not commitments.
@@ -461,6 +520,7 @@ Build only if asked. These are parked ideas, not commitments.
 - TypeScript strict mode is on. No `any` without a comment explaining why.
 - If a change affects the CSV schema, update both `lib/csv.ts` AND the "CSV export" section of this file in the same PR.
 - If you change the pipeline steps, update the "Pipeline" section of this file in the same PR.
+- If Attio attribute slugs, titles, or types change (renamed, added, archived, retyped), re-run `npm run list-slugs` and refresh the "Attio Companies attribute slugs" table in this file in the same PR. Do the same whenever you notice a drift between the live schema and what the table says.
 - Code comments are welcome where intent isn't obvious. Keep them short.
 - Ask before building "Future" section features. They're parked for a reason.
 

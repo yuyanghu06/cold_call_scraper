@@ -40,6 +40,8 @@ export async function POST(req: Request) {
   if (ownerName) values[SLUG.ownerName] = ownerName;
   const followUpNumber = asString(b.followUpNumber);
   if (followUpNumber) values[SLUG.followUpNumber] = followUpNumber;
+  const caller = asString(b.caller);
+  if (caller) values[SLUG.caller] = caller;
   const notes = asString(b.notes);
   if (notes) values[SLUG.notes] = notes;
 

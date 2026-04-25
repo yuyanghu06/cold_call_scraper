@@ -159,33 +159,32 @@ function extractStreetLine(formattedAddress: string | null | undefined): string 
 }
 
 function buildLocationPayload(place: Place): Record<string, unknown> | null {
-  const street = extractStreetLine(place.address) ?? place.address ?? null;
-  const countryCode =
-    place.country && /^[A-Za-z]{2}$/.test(place.country)
-      ? place.country.toUpperCase()
-      : null;
+  // Attio's location attribute wants latitude/longitude as STRINGS
+  // (decimal-formatted), not numbers. Sending numbers comes back as
+  // `invalid_type` 400 on path ["latitude"]. If coords are missing entirely,
+  // skip primary_location; the raw address is still written separately via
+  // SLUG.address.
   const hasCoords =
     typeof place.latitude === "number" &&
     Number.isFinite(place.latitude) &&
     typeof place.longitude === "number" &&
     Number.isFinite(place.longitude);
-  // Attio rejects `latitude: null` with invalid_type; omit the keys entirely
-  // when we don't have a valid numeric pair.
-  const payload: Record<string, unknown> = {
+  if (!hasCoords) return null;
+
+  const street = extractStreetLine(place.address) ?? place.address ?? null;
+  const countryCode =
+    place.country && /^[A-Za-z]{2}$/.test(place.country)
+      ? place.country.toUpperCase()
+      : null;
+  return {
     line_1: street || null, line_2: null, line_3: null, line_4: null,
     locality: place.city ?? null,
     region: place.state ?? null,
     postcode: place.zip ?? null,
     country_code: countryCode,
+    latitude: String(place.latitude),
+    longitude: String(place.longitude),
   };
-  if (hasCoords) {
-    payload.latitude = place.latitude;
-    payload.longitude = place.longitude;
-  }
-  if (!payload.line_1 && !payload.locality && !payload.region && !payload.postcode && !hasCoords) {
-    return null;
-  }
-  return payload;
 }
 
 // ─── Payload builders ─────────────────────────────────────────────────────────
@@ -280,6 +279,7 @@ export async function listTrackingCompanies(
   );
   addFilter(params.callStatus ?? [], SLUG.callStatus);
   addFilter(params.industry ?? [], SLUG.industry);
+  addFilter(params.caller ?? [], SLUG.caller);
 
   const searchTerm = (params.search ?? "").trim();
   if (searchTerm) {
@@ -319,6 +319,7 @@ export async function updateTrackingCompany(
   if (update.companyNumber !== undefined) values[SLUG.companyNumber] = update.companyNumber ?? "";
   if (update.followUpNumber !== undefined) values[SLUG.followUpNumber] = update.followUpNumber ?? "";
   if (update.notes !== undefined) values[SLUG.notes] = update.notes ?? "";
+  if (update.caller !== undefined) values[SLUG.caller] = update.caller ?? "";
 
   if (Object.keys(values).length === 0) {
     const res = await attioRequest(apiKey, "GET", `/objects/companies/records/${recordId}`, undefined, pace);
@@ -349,14 +350,70 @@ export async function listAttributeOptions(
     .map((o) => o.title!);
 }
 
+// Create a new option on a select attribute. Idempotent: if the option already
+// exists Attio returns 409 — we treat that as success and return the title
+// unchanged. Used by the Caller "Add new" UI and by the push pipeline to
+// auto-vivify Territory options for incoming states.
+export async function createAttributeOption(
+  apiKey: string,
+  attributeSlug: string,
+  title: string,
+): Promise<string> {
+  const trimmed = title.trim();
+  if (!trimmed) throw new Error("Option title cannot be empty");
+  const pace = createPacer(PACE_INTERVAL_MS);
+  try {
+    await attioRequest(
+      apiKey,
+      "POST",
+      `/objects/companies/attributes/${attributeSlug}/options`,
+      { data: { title: trimmed } },
+      pace,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Attio surfaces "already exists" as a 409 with an explanatory message.
+    if (/409/.test(msg) || /already exists/i.test(msg)) return trimmed;
+    throw err;
+  }
+  return trimmed;
+}
+
 export async function pushPlacesToAttio(
   apiKey: string,
   places: Place[],
+  opts: { caller?: string | null } = {},
 ): Promise<AttioPushResult> {
   const result: AttioPushResult = { created: 0, updated: 0, skipped: 0, failed: 0, total: places.length, errors: [] };
   if (places.length === 0) return result;
 
+  const caller = opts.caller?.trim() || null;
   const pace = createPacer(PACE_INTERVAL_MS);
+
+  // Auto-vivify Territory options for any state we're about to push. Attio
+  // rejects writes to a select attribute with an unknown title; pre-creating
+  // the options avoids a per-row 400 storm when reps work a new state.
+  try {
+    const needed = new Set<string>();
+    for (const p of places) {
+      if (p.state) needed.add(normalizeTerritory(p.state));
+    }
+    if (needed.size > 0) {
+      const existing = new Set(await listAttributeOptions(apiKey, SLUG.territory));
+      for (const title of needed) {
+        if (!existing.has(title)) {
+          await createAttributeOption(apiKey, SLUG.territory, title);
+        }
+      }
+    }
+  } catch (err) {
+    // Non-fatal: log and continue. Per-row writes will surface a clearer
+    // error if the territory is still missing.
+    result.errors.push(
+      `Territory option provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   const queue = [...places];
   const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     while (true) {
@@ -375,11 +432,16 @@ export async function pushPlacesToAttio(
         }
 
         if (!existing) {
-          await attioRequest(apiKey, "POST", "/objects/companies/records", { data: { values: buildCreateValues(p) } }, pace);
+          const values = buildCreateValues(p);
+          if (caller) values[SLUG.caller] = caller;
+          await attioRequest(apiKey, "POST", "/objects/companies/records", { data: { values } }, pace);
           result.created++;
         } else {
           const updates = buildUpdatePayload(p, existing.values);
           if (needsGoogleIdBackfill) updates[SLUG.googleId] = p.placeId;
+          if (caller && isFieldEmpty(existing.values[SLUG.caller])) {
+            updates[SLUG.caller] = caller;
+          }
           if (Object.keys(updates).length === 0) {
             result.skipped++;
           } else {
