@@ -340,6 +340,35 @@ export async function listAttributeOptions(
     .map((o) => o.title!);
 }
 
+// Create a new option on a select attribute. Idempotent: if the option already
+// exists Attio returns 409 — we treat that as success and return the title
+// unchanged. Used by the Caller "Add new" UI and by the push pipeline to
+// auto-vivify Territory options for incoming states.
+export async function createAttributeOption(
+  apiKey: string,
+  attributeSlug: string,
+  title: string,
+): Promise<string> {
+  const trimmed = title.trim();
+  if (!trimmed) throw new Error("Option title cannot be empty");
+  const pace = createPacer(PACE_INTERVAL_MS);
+  try {
+    await attioRequest(
+      apiKey,
+      "POST",
+      `/objects/companies/attributes/${attributeSlug}/options`,
+      { data: { title: trimmed } },
+      pace,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Attio surfaces "already exists" as a 409 with an explanatory message.
+    if (/409/.test(msg) || /already exists/i.test(msg)) return trimmed;
+    throw err;
+  }
+  return trimmed;
+}
+
 export async function pushPlacesToAttio(
   apiKey: string,
   places: Place[],
@@ -350,6 +379,31 @@ export async function pushPlacesToAttio(
 
   const caller = opts.caller?.trim() || null;
   const pace = createPacer(PACE_INTERVAL_MS);
+
+  // Auto-vivify Territory options for any state we're about to push. Attio
+  // rejects writes to a select attribute with an unknown title; pre-creating
+  // the options avoids a per-row 400 storm when reps work a new state.
+  try {
+    const needed = new Set<string>();
+    for (const p of places) {
+      if (p.state) needed.add(normalizeTerritory(p.state));
+    }
+    if (needed.size > 0) {
+      const existing = new Set(await listAttributeOptions(apiKey, SLUG.territory));
+      for (const title of needed) {
+        if (!existing.has(title)) {
+          await createAttributeOption(apiKey, SLUG.territory, title);
+        }
+      }
+    }
+  } catch (err) {
+    // Non-fatal: log and continue. Per-row writes will surface a clearer
+    // error if the territory is still missing.
+    result.errors.push(
+      `Territory option provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   const queue = [...places];
   const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     while (true) {

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { listAttributeOptions, SLUG } from "@/lib/services/attioService";
+import {
+  createAttributeOption,
+  listAttributeOptions,
+  SLUG,
+} from "@/lib/services/attioService";
 import { gateAttioRequest } from "@/lib/attio-unlock";
 
 export const maxDuration = 30;
@@ -26,6 +30,41 @@ export async function GET(req: Request) {
   try {
     const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);
     return NextResponse.json({ options });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  const session = await auth();
+  const gate = await gateAttioRequest(!!session?.user);
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const b = (body ?? {}) as Record<string, unknown>;
+  const attr = typeof b.attribute === "string" ? b.attribute : "";
+  const title = typeof b.title === "string" ? b.title.trim() : "";
+  if (!attr || !(attr in ALLOWED)) {
+    return NextResponse.json(
+      { error: "attribute must be 'territory', 'callStatus', 'stage', or 'caller'" },
+      { status: 400 },
+    );
+  }
+  if (!title) {
+    return NextResponse.json({ error: "title is required" }, { status: 400 });
+  }
+
+  try {
+    const created = await createAttributeOption(gate.apiKey!, ALLOWED[attr], title);
+    const options = await listAttributeOptions(gate.apiKey!, ALLOWED[attr]);
+    return NextResponse.json({ created, options });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
