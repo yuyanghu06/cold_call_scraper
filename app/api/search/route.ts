@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { authedUserFromRequest } from "@/lib/mobileAuth";
 import type { SearchRequest, SearchResponse } from "@/lib/types";
 import {
   DEFAULT_MAX_REVIEW_COUNT,
@@ -65,8 +65,8 @@ function validateRequest(body: unknown): SearchRequest | { error: string } {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await authedUserFromRequest(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const googleKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!googleKey)

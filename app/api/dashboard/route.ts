@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { listTrackingCompanies } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 import {
   buildDashboardViewModel,
   type DashboardData,
@@ -28,8 +27,7 @@ async function fetchAllCompanies(apiKey: string): Promise<TrackingCompany[]> {
 }
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const url = new URL(req.url);
@@ -40,7 +38,7 @@ export async function GET(req: Request) {
   const callerFilter = url.searchParams.get("caller") ?? null;
 
   try {
-    const allCompanies = await fetchAllCompanies(gate.apiKey!);
+    const allCompanies = await fetchAllCompanies(gate.apiKey);
     const filtered = callerFilter
       ? allCompanies.filter((c) => c.caller === callerFilter)
       : allCompanies;

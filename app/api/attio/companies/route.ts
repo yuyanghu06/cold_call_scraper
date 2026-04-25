@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { listTrackingCompanies, normalizeTerritory } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -19,8 +18,7 @@ function readList(params: URLSearchParams, key: string): string[] {
 }
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const url = new URL(req.url);
@@ -35,7 +33,7 @@ export async function GET(req: Request) {
   const offset = offsetRaw ? Math.max(0, Number(offsetRaw)) : 0;
 
   try {
-    const result = await listTrackingCompanies(gate.apiKey!, { territory, callStatus, industry, caller, search, limit, offset });
+    const result = await listTrackingCompanies(gate.apiKey, { territory, callStatus, industry, caller, search, limit, offset });
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { pushPlacesToAttio } from "@/lib/services/attioService";
-import { gateAttioRequest } from "@/lib/attio-unlock";
+import { gateAttioFromRequest } from "@/lib/mobileAuth";
 import { enrichPlacesWithIndustry } from "@/lib/services/enrichmentService";
 import { fillMissingPlaceCoords } from "@/lib/services/geocodeService";
 import type { Place } from "@/lib/types";
@@ -10,8 +9,7 @@ export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const gate = await gateAttioRequest(!!session?.user);
+  const gate = await gateAttioFromRequest(req);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   let body: unknown;
@@ -53,7 +51,7 @@ export async function POST(req: Request) {
     } else {
       geocodeWarnings.push("NOMINATIM_USER_AGENT not set — coord-less places will sync without primary_location.");
     }
-    const attio = await pushPlacesToAttio(gate.apiKey!, enrichment.places, { caller });
+    const attio = await pushPlacesToAttio(gate.apiKey, enrichment.places, { caller });
     return NextResponse.json({
       ...attio,
       enrichedCount: enrichment.places.filter((p) => p.industry).length,
