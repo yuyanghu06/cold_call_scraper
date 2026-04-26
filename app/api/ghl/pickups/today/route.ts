@@ -25,8 +25,8 @@ import {
   getContactAppointments,
   getLocationId,
   getPickupCalendarIds,
+  parseDateAsEpochMs,
   readContactCustomField,
-  searchContactsByBookingDate,
   searchContactsByTag,
   type GhlAppointment,
   type GhlContact,
@@ -94,25 +94,6 @@ function contactName(c: GhlContact | null, fallbackId: string): string {
   return parts || c.email || c.phone || c.id;
 }
 
-// Custom-field date values come in either as epoch-ms (number or numeric
-// string) or as an ISO 8601 string. Normalize to ISO so the iOS payload
-// is always the same shape.
-function normalizeBookingTime(raw: unknown): string | null {
-  if (typeof raw === "number" && Number.isFinite(raw)) {
-    return new Date(raw).toISOString();
-  }
-  if (typeof raw === "string" && raw.trim()) {
-    const trimmed = raw.trim();
-    const asNum = Number(trimmed);
-    if (Number.isFinite(asNum) && /^\d+$/.test(trimmed)) {
-      return new Date(asNum).toISOString();
-    }
-    const parsed = Date.parse(trimmed);
-    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
-  }
-  return null;
-}
-
 export async function GET(req: Request) {
   const user = await authedUserFromRequest(req);
   if (!user) {
@@ -148,6 +129,7 @@ export async function GET(req: Request) {
         bookingDateFieldId,
         locationId,
         tz,
+        warnings,
       });
       console.log(`${LOG} done in ${elapsed()}ms — matchedToday=${result.length}`);
       return NextResponse.json({ contacts: result, warnings });
@@ -191,31 +173,55 @@ async function runBookingDatePath(args: {
   bookingDateFieldId: string;
   locationId: string;
   tz: string;
+  warnings: string[];
 }): Promise<PickupContact[]> {
-  const { bookingDateFieldId, locationId, tz } = args;
+  const { bookingDateFieldId, locationId, tz, warnings } = args;
   const { startMs, endMs } = todayBoundsEpochMs(tz);
-  const contacts = await searchContactsByBookingDate(
-    bookingDateFieldId,
-    locationId,
-    startMs,
-    endMs,
+
+  // GHL v2 won't accept a raw custom-field id as a top-level `field` in
+  // /contacts/search filters, and the alternate syntaxes vary by GHL
+  // version. Fetching all calendly-bookings contacts is one cheap call (we
+  // measured ~800ms for 320 contacts) — we then filter on the booking-date
+  // custom field client-side. No per-contact fan-out.
+  const tagStart = Date.now();
+  const contacts = await searchContactsByTag("calendly-bookings", locationId);
+  console.log(
+    `${LOG} tag search returned ${contacts.length} contact(s) in ${Date.now() - tagStart}ms`,
   );
 
+  let withCustomFields = 0;
+  let parseFailures = 0;
   const rows: PickupContact[] = [];
   for (const contact of contacts) {
+    if (contact.customFields && contact.customFields.length > 0) withCustomFields++;
     const raw = readContactCustomField(contact, bookingDateFieldId);
-    const appointmentTime =
-      normalizeBookingTime(raw) ?? new Date(startMs).toISOString();
+    if (raw === undefined || raw === null || raw === "") continue;
+    const ms = parseDateAsEpochMs(raw);
+    if (ms === null) {
+      parseFailures++;
+      continue;
+    }
+    if (ms < startMs || ms >= endMs) continue;
     rows.push({
       id: contact.id,
       name: contactName(contact, contact.id),
       phone: contact.phone ?? null,
       email: contact.email ?? null,
-      appointmentTime,
+      appointmentTime: new Date(ms).toISOString(),
       appointmentNotes: null,
       tags: contact.tags ?? [],
     });
   }
+
+  if (contacts.length > 0 && withCustomFields === 0) {
+    warnings.push(
+      "GHL search returned contacts but none included customFields. The token may need 'contacts.readonly' with custom-field scope, or POST /contacts/search isn't returning custom fields on this account.",
+    );
+  }
+  if (parseFailures > 0) {
+    warnings.push(`${parseFailures} contact(s) had unparseable booking-date values.`);
+  }
+
   rows.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
   return rows;
 }

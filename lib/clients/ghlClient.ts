@@ -205,53 +205,10 @@ interface AppointmentsResponse {
   appointments?: GhlAppointment[];
 }
 
-// Search contacts whose `bookingDateFieldId` custom field falls inside the
-// given epoch-ms window. v2's POST /contacts/search accepts numeric custom
-// fields with `gte`/`lt` operators and ANDs filters in the array by default.
-//
-// We page defensively even though "today's bookings" should fit in one page
-// for any realistic operator's volume.
-export async function searchContactsByBookingDate(
-  bookingDateFieldId: string,
-  locationId: string,
-  startMs: number,
-  endMs: number,
-): Promise<GhlContact[]> {
-  const out: GhlContact[] = [];
-  const seen = new Set<string>();
-  for (let page = 1; page <= 5; page++) {
-    const t0 = Date.now();
-    const res = await ghlRequest("POST", "/contacts/search", {
-      locationId,
-      pageLimit: 100,
-      page,
-      filters: [
-        { field: bookingDateFieldId, operator: "gte", value: startMs },
-        { field: bookingDateFieldId, operator: "lt", value: endMs },
-      ],
-    });
-    const json = (await res.json()) as SearchContactsResponse;
-    const batch = json.contacts ?? [];
-    console.log(
-      `[ghl] /contacts/search by booking-date page=${page} got=${batch.length} total=${
-        json.total ?? "?"
-      } in ${Date.now() - t0}ms`,
-    );
-    for (const c of batch) {
-      if (seen.has(c.id)) continue;
-      seen.add(c.id);
-      out.push(c);
-    }
-    if (batch.length < 100) break;
-    if (typeof json.total === "number" && out.length >= json.total) break;
-  }
-  return out;
-}
-
 // Read a single custom-field value from a contact. The shape on v2 contacts
 // is `customFields: [{ id, value, ... }]`; this helper just looks up by id.
 export function readContactCustomField(
-  contact: GhlContact & { customFields?: Array<{ id?: string; value?: unknown }> },
+  contact: GhlContact,
   fieldId: string,
 ): unknown {
   const fields = contact.customFields ?? [];
@@ -259,6 +216,23 @@ export function readContactCustomField(
     if (f?.id === fieldId) return f.value;
   }
   return undefined;
+}
+
+// Best-effort: parse a custom-field date value into epoch ms. GHL stores
+// these as numbers (ms), numeric strings, or ISO strings depending on the
+// field type and how the integration set it.
+export function parseDateAsEpochMs(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) return n;
+    }
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
 }
 
 // Fetch every appointment on `calendarId` between two epoch-ms timestamps.
