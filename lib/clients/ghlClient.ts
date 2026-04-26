@@ -43,21 +43,9 @@ export function getLocationId(): string {
   return raw.trim();
 }
 
-// Optional: comma-separated calendar IDs the pickup screen should query.
-// When set, /api/ghl/pickups/today uses the much-faster calendar-events
-// endpoint instead of iterating per-contact appointments.
-export function getPickupCalendarIds(): string[] {
-  const raw = process.env.GHL_CALENDAR_ID ?? process.env.GHL_CALENDAR_IDS;
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 // Custom-field id on GHL Contacts representing the appointment / booking
-// date. Used by /api/ghl/pickups/today as the primary fast path: one search
-// call filtered to today, no per-contact fan-out.
+// date. /api/ghl/pickups/today filters on this client-side after pulling
+// calendly-bookings tagged contacts.
 export function getBookingDateFieldId(): string | null {
   const raw = process.env.GHL_BOOKING_DATE_FIELD_ID;
   if (!raw || !raw.trim()) return null;
@@ -141,18 +129,6 @@ export interface GhlContact {
   customFields?: Array<{ id?: string; value?: unknown }>;
 }
 
-export interface GhlAppointment {
-  id: string;
-  contactId: string;
-  title?: string;
-  startTime: string;        // ISO 8601
-  endTime?: string;
-  appointmentStatus?: string;
-  notes?: string;
-  calendarId?: string;
-  locationId?: string;
-}
-
 // ─── Endpoints ────────────────────────────────────────────────────────────────
 
 interface SearchContactsResponse {
@@ -200,11 +176,6 @@ export async function searchContactsByTag(
   return out;
 }
 
-interface AppointmentsResponse {
-  events?: GhlAppointment[];
-  appointments?: GhlAppointment[];
-}
-
 // Read a single custom-field value from a contact. The shape on v2 contacts
 // is `customFields: [{ id, value, ... }]`; this helper just looks up by id.
 export function readContactCustomField(
@@ -233,57 +204,6 @@ export function parseDateAsEpochMs(raw: unknown): number | null {
     if (!Number.isNaN(parsed)) return parsed;
   }
   return null;
-}
-
-// Fetch every appointment on `calendarId` between two epoch-ms timestamps.
-// Used by the pickup screen to scope to today's events, which sidesteps the
-// cumulative `calendly-bookings` tag entirely.
-export async function getCalendarEventsInRange(
-  calendarId: string,
-  locationId: string,
-  startTimeMs: number,
-  endTimeMs: number,
-): Promise<GhlAppointment[]> {
-  const params = new URLSearchParams({
-    locationId,
-    calendarId,
-    startTime: String(startTimeMs),
-    endTime: String(endTimeMs),
-  });
-  const t0 = Date.now();
-  const res = await ghlRequest("GET", `/calendars/events?${params.toString()}`);
-  const json = (await res.json()) as AppointmentsResponse;
-  const events = json.events ?? json.appointments ?? [];
-  console.log(
-    `[ghl] /calendars/events calendarId=${calendarId} window=${startTimeMs}-${endTimeMs} got=${events.length} in ${Date.now() - t0}ms`,
-  );
-  return events;
-}
-
-export async function getContact(
-  contactId: string,
-  locationId: string,
-): Promise<GhlContact | null> {
-  const params = new URLSearchParams({ locationId });
-  const res = await ghlRequest(
-    "GET",
-    `/contacts/${encodeURIComponent(contactId)}?${params.toString()}`,
-  );
-  const json = (await res.json()) as { contact?: GhlContact };
-  return json.contact ?? null;
-}
-
-export async function getContactAppointments(
-  contactId: string,
-  locationId: string,
-): Promise<GhlAppointment[]> {
-  const params = new URLSearchParams({ locationId });
-  const res = await ghlRequest(
-    "GET",
-    `/contacts/${encodeURIComponent(contactId)}/appointments?${params.toString()}`,
-  );
-  const json = (await res.json()) as AppointmentsResponse;
-  return json.events ?? json.appointments ?? [];
 }
 
 interface TagMutationResponse {
