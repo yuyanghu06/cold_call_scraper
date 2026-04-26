@@ -139,6 +139,7 @@ export async function searchContactsByTag(
   const out: GhlContact[] = [];
   const seen = new Set<string>();
   for (let page = 1; page <= 10; page++) {
+    const t0 = Date.now();
     const res = await ghlRequest("POST", "/contacts/search", {
       locationId,
       pageLimit: 100,
@@ -149,6 +150,11 @@ export async function searchContactsByTag(
     });
     const json = (await res.json()) as SearchContactsResponse;
     const batch = json.contacts ?? [];
+    console.log(
+      `[ghl] /contacts/search page=${page} got=${batch.length} total=${
+        json.total ?? "?"
+      } in ${Date.now() - t0}ms`,
+    );
     for (const c of batch) {
       if (seen.has(c.id)) continue;
       seen.add(c.id);
