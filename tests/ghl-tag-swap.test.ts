@@ -120,3 +120,53 @@ describe("swapCalendlyTags", () => {
     ).rejects.toThrow(/GHL 400/);
   });
 });
+
+describe("searchContactsByTag", () => {
+  it("posts to /contacts/search with a tag-contains filter (NOT a query= free-text search)", async () => {
+    const calls: FetchCall[] = [];
+    fetchMock.mockImplementation(async (...args: Parameters<typeof fetch>) => {
+      const c = recordCall(args);
+      calls.push(c);
+      return jsonResponse({ contacts: [], total: 0 });
+    });
+
+    const { searchContactsByTag } = await import("@/lib/clients/ghlClient");
+    const result = await searchContactsByTag("calendly-bookings", "loc-123");
+    expect(result).toEqual([]);
+
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    expect(call.method).toBe("POST");
+    expect(call.url).toContain("/contacts/search");
+    expect(call.body).toMatchObject({
+      locationId: "loc-123",
+      pageLimit: 100,
+      page: 1,
+      filters: [{ field: "tags", operator: "contains", value: "calendly-bookings" }],
+    });
+  });
+
+  it("dedupes across pages and stops when batch is short", async () => {
+    let page = 0;
+    fetchMock.mockImplementation(async (..._args: Parameters<typeof fetch>) => {
+      page++;
+      if (page === 1) {
+        return jsonResponse({
+          contacts: Array.from({ length: 100 }, (_, i) => ({
+            id: `c${i}`,
+            tags: ["calendly-bookings"],
+          })),
+          total: 120,
+        });
+      }
+      return jsonResponse({
+        contacts: [{ id: "c100", tags: ["calendly-bookings"] }],
+        total: 120,
+      });
+    });
+    const { searchContactsByTag } = await import("@/lib/clients/ghlClient");
+    const result = await searchContactsByTag("calendly-bookings", "loc-123");
+    expect(result).toHaveLength(101);
+    expect(page).toBe(2);
+  });
+});

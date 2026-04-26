@@ -11,6 +11,10 @@ const VERSION_HEADER = "2021-07-28";
 const RATE_PER_SEC = 10;
 const PACE_INTERVAL_MS = Math.ceil(1000 / RATE_PER_SEC);
 const MAX_ATTEMPTS = 4;
+// Per-request abort so a stalled GHL response doesn't pin the route up to
+// Vercel's 60s function timeout. We retry on 5xx/429, so a slow upstream
+// still gets a few shots before we give up.
+const REQUEST_TIMEOUT_MS = 10_000;
 
 const pace = createPacer(PACE_INTERVAL_MS);
 
@@ -45,16 +49,33 @@ export async function ghlRequest(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await pace();
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        Version: VERSION_HEADER,
-      },
-      body: serialized,
-    });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          Version: VERSION_HEADER,
+        },
+        body: serialized,
+        signal: ctl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      const isLast = attempt === MAX_ATTEMPTS;
+      const aborted = (err as { name?: string })?.name === "AbortError";
+      if (!isLast && (aborted || err instanceof TypeError)) {
+        await sleep(Math.min(500 * 2 ** (attempt - 1), 4000));
+        continue;
+      }
+      const reason = aborted ? "timeout" : err instanceof Error ? err.message : String(err);
+      throw new Error(`GHL ${method} ${path} failed: ${reason}`);
+    }
+    clearTimeout(timer);
     if (res.ok) return res;
 
     const isLast = attempt === MAX_ATTEMPTS;
@@ -100,40 +121,41 @@ export interface GhlAppointment {
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
 
-interface ContactsListResponse {
+interface SearchContactsResponse {
   contacts?: GhlContact[];
-  meta?: { nextPageUrl?: string | null; total?: number; startAfterId?: string | null };
+  total?: number;
 }
 
-// GHL's `/contacts/` endpoint paginates with `startAfterId`. We pull all
-// pages tagged with the given tag — should be small (one calendar's-worth of
-// upcoming appointments), but cap at 1000 just in case.
+// Filter contacts by tag using v2's POST /contacts/search. The previous
+// implementation passed `query=<tag>` to GET /contacts/, which is a free-text
+// search over name/phone/email — wrong, and slow enough to time out.
+//
+// Pagination: GHL caps `pageLimit` at 100 and uses 1-based `page`. We bail
+// out as soon as we've seen `total` (or 10 pages, defensively).
 export async function searchContactsByTag(
   tag: string,
   locationId: string,
 ): Promise<GhlContact[]> {
   const out: GhlContact[] = [];
-  let startAfterId: string | null | undefined = undefined;
-  for (let page = 0; page < 10; page++) {
-    const params = new URLSearchParams({
+  const seen = new Set<string>();
+  for (let page = 1; page <= 10; page++) {
+    const res = await ghlRequest("POST", "/contacts/search", {
       locationId,
-      query: tag,
-      limit: "100",
+      pageLimit: 100,
+      page,
+      filters: [
+        { field: "tags", operator: "contains", value: tag },
+      ],
     });
-    if (startAfterId) params.set("startAfterId", startAfterId);
-    const res = await ghlRequest("GET", `/contacts/?${params.toString()}`);
-    const json = (await res.json()) as ContactsListResponse;
+    const json = (await res.json()) as SearchContactsResponse;
     const batch = json.contacts ?? [];
-    // The `query` parameter is a free-text search over name/email/phone, not
-    // a tag filter. We post-filter to contacts that actually carry the tag.
     for (const c of batch) {
-      if ((c.tags ?? []).map((t) => t.toLowerCase()).includes(tag.toLowerCase())) {
-        out.push(c);
-      }
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push(c);
     }
-    const next = json.meta?.startAfterId;
-    if (!next || batch.length === 0) break;
-    startAfterId = next;
+    if (batch.length < 100) break;
+    if (typeof json.total === "number" && out.length >= json.total) break;
   }
   return out;
 }
@@ -145,13 +167,12 @@ interface AppointmentsResponse {
 
 export async function getContactAppointments(
   contactId: string,
-  _locationId: string,
+  locationId: string,
 ): Promise<GhlAppointment[]> {
-  // `/contacts/{id}/appointments` returns the contact's appointments. The
-  // locationId scoping is implied by the contact.
+  const params = new URLSearchParams({ locationId });
   const res = await ghlRequest(
     "GET",
-    `/contacts/${encodeURIComponent(contactId)}/appointments`,
+    `/contacts/${encodeURIComponent(contactId)}/appointments?${params.toString()}`,
   );
   const json = (await res.json()) as AppointmentsResponse;
   return json.events ?? json.appointments ?? [];
