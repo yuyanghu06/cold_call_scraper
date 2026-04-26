@@ -6,6 +6,7 @@ export type AttioValueEntry = Record<string, unknown>;
 export interface AttioRecord {
   id: { record_id: string };
   created_at?: string;
+  updated_at?: string;
   values: Record<string, AttioValueEntry[] | undefined>;
 }
 
