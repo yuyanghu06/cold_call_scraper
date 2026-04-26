@@ -52,6 +52,19 @@ export function getBookingDateFieldId(): string | null {
   return raw.trim();
 }
 
+// Calendar id(s) the pickup screen scopes events to. Required now that
+// /api/ghl/pickups/today queries calendar-events directly — without
+// scoping we'd return every event at the location (e.g. internal team
+// meetings) as a "pickup". Single id or comma-separated.
+export function getPickupCalendarIds(): string[] {
+  const raw = process.env.GHL_CALENDAR_ID ?? process.env.GHL_CALENDAR_IDS;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -261,6 +274,72 @@ export function bookingDateKeyInTz(raw: unknown, tz: string): string | null {
   return new Date(ms).toLocaleDateString("en-CA", {
     timeZone: isUtcMidnight ? "UTC" : tz,
   });
+}
+
+// ─── Calendar events ──────────────────────────────────────────────────────────
+
+export interface GhlAppointment {
+  id: string;
+  contactId: string;
+  title?: string;
+  startTime: string;        // ISO 8601, server-emitted
+  endTime?: string;
+  appointmentStatus?: string;
+  notes?: string;
+  calendarId?: string;
+  locationId?: string;
+}
+
+interface CalendarEventsResponse {
+  events?: GhlAppointment[];
+  appointments?: GhlAppointment[];
+}
+
+// Fetch every event on `calendarId` whose startTime falls inside the
+// epoch-ms window. We use this instead of contact-tag search so the
+// pickup screen sees every booking regardless of post-call tag swaps.
+export async function getCalendarEvents(
+  calendarId: string,
+  locationId: string,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<GhlAppointment[]> {
+  const params = new URLSearchParams({
+    locationId,
+    calendarId,
+    startTime: String(startTimeMs),
+    endTime: String(endTimeMs),
+  });
+  const t0 = Date.now();
+  const res = await ghlRequest("GET", `/calendars/events?${params.toString()}`);
+  const json = (await res.json()) as CalendarEventsResponse;
+  const events = json.events ?? json.appointments ?? [];
+  console.log(
+    `[ghl] /calendars/events calendarId=${calendarId} window=${startTimeMs}-${endTimeMs} got=${events.length} in ${Date.now() - t0}ms`,
+  );
+  return events;
+}
+
+// Fetch a single contact's full record. Returns the contact object (with
+// tags, customFields, source) or null if the service can't see / find it.
+export async function getContact(
+  contactId: string,
+  locationId: string,
+): Promise<GhlContact | null> {
+  const params = new URLSearchParams({ locationId });
+  try {
+    const res = await ghlRequest(
+      "GET",
+      `/contacts/${encodeURIComponent(contactId)}?${params.toString()}`,
+    );
+    const json = (await res.json()) as { contact?: GhlContact };
+    return json.contact ?? null;
+  } catch (err) {
+    const status = (err as { status?: number; code?: number })?.status
+      ?? (err as { status?: number; code?: number })?.code;
+    if (status === 404) return null;
+    throw err;
+  }
 }
 
 interface TagMutationResponse {
