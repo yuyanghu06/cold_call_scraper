@@ -121,6 +121,37 @@ describe("swapCalendlyTags", () => {
   });
 });
 
+describe("findCustomFieldByName", () => {
+  it("matches v2 customFields by `name`, case-insensitively", async () => {
+    const { findCustomFieldByName } = await import("@/lib/clients/ghlClient");
+    const c = {
+      id: "x",
+      customFields: [
+        { id: "f1", name: "Other", value: "nope" },
+        { id: "f2", name: "DISCOVERY_SOURCE", value: "Google Ads" },
+      ],
+    };
+    expect(findCustomFieldByName(c, "discovery_source")).toBe("Google Ads");
+  });
+
+  it("matches v1 customField by `fieldKey`, case-insensitively", async () => {
+    const { findCustomFieldByName } = await import("@/lib/clients/ghlClient");
+    const c = {
+      id: "x",
+      customField: [
+        { id: "f1", fieldKey: "Discovery_Source", value: "Instagram" },
+      ],
+    };
+    expect(findCustomFieldByName(c, "discovery_source")).toBe("Instagram");
+  });
+
+  it("returns undefined when the field is missing on both shapes", async () => {
+    const { findCustomFieldByName } = await import("@/lib/clients/ghlClient");
+    const c = { id: "x", customFields: [{ id: "f1", value: "v" }] };
+    expect(findCustomFieldByName(c, "discovery_source")).toBeUndefined();
+  });
+});
+
 describe("bookingDateKeyInTz", () => {
   it("returns a YYYY-MM-DD string verbatim", async () => {
     const { bookingDateKeyInTz } = await import("@/lib/clients/ghlClient");
