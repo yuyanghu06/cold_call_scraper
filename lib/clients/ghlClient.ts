@@ -11,6 +11,15 @@ const VERSION_HEADER = "2021-07-28";
 const RATE_PER_SEC = 10;
 const PACE_INTERVAL_MS = Math.ceil(1000 / RATE_PER_SEC);
 const MAX_ATTEMPTS = 4;
+// Per-request abort so a stalled GHL response doesn't pin the route up to
+// Vercel's 60s function timeout. Tight enough that even if every attempt
+// times out we throw before iOS's 60s URLSession timeout fires.
+const REQUEST_TIMEOUT_MS = 6_000;
+// Don't retry an aborted request — if upstream isn't responding within 6s,
+// retrying just burns the route's budget. Network errors (TypeError) still
+// retry once.
+const MAX_RETRIES_ON_TIMEOUT = 0;
+const MAX_RETRIES_ON_NETERR = 1;
 
 const pace = createPacer(PACE_INTERVAL_MS);
 
@@ -34,6 +43,15 @@ export function getLocationId(): string {
   return raw.trim();
 }
 
+// Custom-field id on GHL Contacts representing the appointment / booking
+// date. /api/ghl/pickups/today filters on this client-side after pulling
+// calendly-bookings tagged contacts.
+export function getBookingDateFieldId(): string | null {
+  const raw = process.env.GHL_BOOKING_DATE_FIELD_ID;
+  if (!raw || !raw.trim()) return null;
+  return raw.trim();
+}
+
 export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -43,18 +61,42 @@ export async function ghlRequest(
   const url = `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const serialized = body === undefined ? undefined : JSON.stringify(body);
 
+  let timeoutAttempts = 0;
+  let netErrAttempts = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await pace();
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        Version: VERSION_HEADER,
-      },
-      body: serialized,
-    });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          Version: VERSION_HEADER,
+        },
+        body: serialized,
+        signal: ctl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      const aborted = (err as { name?: string })?.name === "AbortError";
+      const isLast = attempt === MAX_ATTEMPTS;
+      if (aborted && timeoutAttempts < MAX_RETRIES_ON_TIMEOUT && !isLast) {
+        timeoutAttempts++;
+        continue;
+      }
+      if (!aborted && err instanceof TypeError && netErrAttempts < MAX_RETRIES_ON_NETERR && !isLast) {
+        netErrAttempts++;
+        await sleep(500);
+        continue;
+      }
+      const reason = aborted ? `timeout after ${REQUEST_TIMEOUT_MS}ms` : err instanceof Error ? err.message : String(err);
+      throw new Error(`GHL ${method} ${path} failed: ${reason}`);
+    }
+    clearTimeout(timer);
     if (res.ok) return res;
 
     const isLast = attempt === MAX_ATTEMPTS;
@@ -84,77 +126,109 @@ export interface GhlContact {
   phone?: string;
   tags?: string[];
   locationId?: string;
-}
-
-export interface GhlAppointment {
-  id: string;
-  contactId: string;
-  title?: string;
-  startTime: string;        // ISO 8601
-  endTime?: string;
-  appointmentStatus?: string;
-  notes?: string;
-  calendarId?: string;
-  locationId?: string;
+  customFields?: Array<{ id?: string; value?: unknown }>;
 }
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
 
-interface ContactsListResponse {
+interface SearchContactsResponse {
   contacts?: GhlContact[];
-  meta?: { nextPageUrl?: string | null; total?: number; startAfterId?: string | null };
+  total?: number;
 }
 
-// GHL's `/contacts/` endpoint paginates with `startAfterId`. We pull all
-// pages tagged with the given tag — should be small (one calendar's-worth of
-// upcoming appointments), but cap at 1000 just in case.
+// Filter contacts by tag using v2's POST /contacts/search. The previous
+// implementation passed `query=<tag>` to GET /contacts/, which is a free-text
+// search over name/phone/email — wrong, and slow enough to time out.
+//
+// Pagination: GHL caps `pageLimit` at 100 and uses 1-based `page`. We bail
+// out as soon as we've seen `total` (or 10 pages, defensively).
 export async function searchContactsByTag(
   tag: string,
   locationId: string,
 ): Promise<GhlContact[]> {
   const out: GhlContact[] = [];
-  let startAfterId: string | null | undefined = undefined;
-  for (let page = 0; page < 10; page++) {
-    const params = new URLSearchParams({
+  const seen = new Set<string>();
+  for (let page = 1; page <= 10; page++) {
+    const t0 = Date.now();
+    const res = await ghlRequest("POST", "/contacts/search", {
       locationId,
-      query: tag,
-      limit: "100",
+      pageLimit: 100,
+      page,
+      filters: [
+        { field: "tags", operator: "contains", value: tag },
+      ],
     });
-    if (startAfterId) params.set("startAfterId", startAfterId);
-    const res = await ghlRequest("GET", `/contacts/?${params.toString()}`);
-    const json = (await res.json()) as ContactsListResponse;
+    const json = (await res.json()) as SearchContactsResponse;
     const batch = json.contacts ?? [];
-    // The `query` parameter is a free-text search over name/email/phone, not
-    // a tag filter. We post-filter to contacts that actually carry the tag.
+    console.log(
+      `[ghl] /contacts/search page=${page} got=${batch.length} total=${
+        json.total ?? "?"
+      } in ${Date.now() - t0}ms`,
+    );
     for (const c of batch) {
-      if ((c.tags ?? []).map((t) => t.toLowerCase()).includes(tag.toLowerCase())) {
-        out.push(c);
-      }
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push(c);
     }
-    const next = json.meta?.startAfterId;
-    if (!next || batch.length === 0) break;
-    startAfterId = next;
+    if (batch.length < 100) break;
+    if (typeof json.total === "number" && out.length >= json.total) break;
   }
   return out;
 }
 
-interface AppointmentsResponse {
-  events?: GhlAppointment[];
-  appointments?: GhlAppointment[];
+// Read a single custom-field value from a contact. The shape on v2 contacts
+// is `customFields: [{ id, value, ... }]`; this helper just looks up by id.
+export function readContactCustomField(
+  contact: GhlContact,
+  fieldId: string,
+): unknown {
+  const fields = contact.customFields ?? [];
+  for (const f of fields) {
+    if (f?.id === fieldId) return f.value;
+  }
+  return undefined;
 }
 
-export async function getContactAppointments(
-  contactId: string,
-  _locationId: string,
-): Promise<GhlAppointment[]> {
-  // `/contacts/{id}/appointments` returns the contact's appointments. The
-  // locationId scoping is implied by the contact.
-  const res = await ghlRequest(
-    "GET",
-    `/contacts/${encodeURIComponent(contactId)}/appointments`,
-  );
-  const json = (await res.json()) as AppointmentsResponse;
-  return json.events ?? json.appointments ?? [];
+// Best-effort: parse a custom-field date value into epoch ms. GHL stores
+// these as numbers (ms), numeric strings, or ISO strings depending on the
+// field type and how the integration set it.
+export function parseDateAsEpochMs(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) return n;
+    }
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+// Calendar-date key (YYYY-MM-DD) for a custom-field value. The semantics
+// differ by storage format:
+//
+//   - "YYYY-MM-DD" string  → that calendar date verbatim. Tz is irrelevant.
+//   - ms at exactly UTC midnight (n % 86_400_000 === 0) → GHL's storage
+//     for a date-typed custom field. Format as UTC, NOT the caller's tz —
+//     otherwise a "2026-04-27" booking reads as 2026-04-26 in NY because
+//     UTC midnight is the previous evening locally.
+//   - any other instant (ms or ISO with time) → project into the caller's
+//     tz and format. This is the right call for datetime-typed fields.
+//
+// Returns null on unparseable values.
+export function bookingDateKeyInTz(raw: unknown, tz: string): string | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  }
+  const ms = parseDateAsEpochMs(raw);
+  if (ms === null) return null;
+  const isUtcMidnight = ms % 86_400_000 === 0;
+  return new Date(ms).toLocaleDateString("en-CA", {
+    timeZone: isUtcMidnight ? "UTC" : tz,
+  });
 }
 
 interface TagMutationResponse {

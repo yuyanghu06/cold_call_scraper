@@ -151,11 +151,22 @@ function countBy(
     .map(([name, count]) => ({ name, count }));
 }
 
+// Records start life with callStatus "Not called yet" — assigning a caller
+// doesn't mean the call has happened. The chart should reflect actual calls,
+// so a row only counts when callStatus has moved off the default. Records
+// without a callStatus value at all are also pre-call (legacy/uncategorized).
+const NOT_CALLED_STATUS = "Not called yet";
+
+function isCalled(c: TrackingCompany): boolean {
+  if (!c.callStatus) return false;
+  return c.callStatus !== NOT_CALLED_STATUS;
+}
+
 function buildCallsByDay(
   companies: TrackingCompany[],
   period: DashboardPeriod,
 ): { rows: CallsByDayRow[]; callerNames: string[] } {
-  // Only called records with a usable timestamp
+  //  Only called records with a usable timestamp
   const called = companies.filter(
     (c) => c.caller && c.callStatus && c.callStatus !== "Not called yet" &&
       (c.callStatusUpdatedAt ?? c.updatedAt ?? c.createdAt),
@@ -387,7 +398,7 @@ function buildRecentCalls(companies: TrackingCompany[]): RecentCall[] {
 }
 
 function buildSankey(byCallStatus: Array<{ name: string; count: number }>): SankeyData {
-  const outcomes = byCallStatus.filter((s) => s.name !== "Not called yet" && s.count > 0);
+  const outcomes = byCallStatus.filter((s) => s.name !== NOT_CALLED_STATUS && s.count > 0);
   const calledCount = outcomes.reduce((s, o) => s + o.count, 0);
 
   if (calledCount === 0) return { nodes: [], links: [] };

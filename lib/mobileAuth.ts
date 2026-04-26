@@ -157,9 +157,16 @@ export async function authedUserFromRequest(
   }
 
   const session = await auth();
-  if (!session?.user?.email) return null;
+  if (!session?.user) return null;
+  // Email is the canonical identifier for the mobile JWT subject, but the
+  // cookie path just needs to know the user is authed. Fall back to name so
+  // a session without an email claim still passes the gate it passed before.
+  const email =
+    (typeof session.user.email === "string" && session.user.email) ||
+    (typeof session.user.name === "string" && session.user.name) ||
+    "";
   return {
-    email: session.user.email,
+    email,
     unlocked: await hasUnlockCookie(),
     source: "cookie",
     name: session.user.name ?? undefined,

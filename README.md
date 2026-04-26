@@ -22,6 +22,11 @@ See `.env.local.example` for the full list. At minimum:
 - `GOOGLE_PLACES_API_KEY` — Google Cloud key with "Places API (New)" enabled
 - `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` — only if you want phone validation
 
+For the iOS app's Demos section (`/api/demos/*`):
+
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — full JSON of a service account key with read access to the three folders below
+- `DEMOS_CHECKLIST_FOLDER_ID`, `DEMOS_CONTRACTS_FOLDER_ID`, `DEMOS_FOOTAGE_FOLDER_ID` — Drive folder IDs the iOS app reads from. `/api/demos/file/:id` only proxies files whose parent is one of these three folders.
+
 ## Tests
 
 ```bash

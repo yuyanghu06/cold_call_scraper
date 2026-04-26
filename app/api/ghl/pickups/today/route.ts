@@ -1,22 +1,30 @@
-// GET /api/ghl/pickups/today?tz=America/New_York
+// GET /api/ghl/pickups/today?tz=America/New_York&from=YYYY-MM-DD&to=YYYY-MM-DD
 //
-// Returns the contacts tagged `calendly-bookings` whose appointment falls on
-// today in the requested timezone. Each contact gets enriched with the
-// matching appointment time + notes for the iOS pickup screen.
+// Returns the contacts whose `booking date` custom field falls inside the
+// requested calendar-date window in the caller's timezone. One paginated GHL
+// search (filtered to the `calendly-bookings` tag), then a client-side
+// date-string range comparison.
+//
+// Backwards-compat: with no `from`/`to`, the window is today/today (the
+// original behavior). The route name stays for older iOS builds.
 
 import { NextResponse } from "next/server";
-import pLimit from "p-limit";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
 import {
-  getContactAppointments,
+  bookingDateKeyInTz,
+  getBookingDateFieldId,
   getLocationId,
+  parseDateAsEpochMs,
+  readContactCustomField,
   searchContactsByTag,
-  type GhlAppointment,
   type GhlContact,
 } from "@/lib/clients/ghlClient";
+import { resolveRange } from "@/lib/pickup-date-range";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+const LOG = "[ghl/pickups/today]";
 
 interface PickupContact {
   id: string;
@@ -26,15 +34,6 @@ interface PickupContact {
   appointmentTime: string;
   appointmentNotes: string | null;
   tags: string[];
-}
-
-function dateKeyInTz(iso: string, tz: string): string {
-  // en-CA gives YYYY-MM-DD reliably across runtimes.
-  return new Date(iso).toLocaleDateString("en-CA", { timeZone: tz });
-}
-
-function todayKey(tz: string): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: tz });
 }
 
 function isValidTimeZone(tz: string): boolean {
@@ -53,6 +52,16 @@ function contactName(c: GhlContact): string {
   return parts || c.email || c.phone || c.id;
 }
 
+// Build the iOS-facing `appointmentTime` for a contact. We always return an
+// ISO string, but the underlying storage format varies (date-only string,
+// UTC-midnight ms, or a real instant), so we render the most accurate ISO
+// we can from each.
+function appointmentTimeIso(raw: unknown, dateKey: string): string {
+  const ms = parseDateAsEpochMs(raw);
+  if (ms !== null) return new Date(ms).toISOString();
+  return `${dateKey}T00:00:00.000Z`;
+}
+
 export async function GET(req: Request) {
   const user = await authedUserFromRequest(req);
   if (!user) {
@@ -65,6 +74,24 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: `Invalid tz: ${tz}` }, { status: 400 });
   }
 
+  const rangeResult = resolveRange(
+    url.searchParams.get("from"),
+    url.searchParams.get("to"),
+    tz,
+  );
+  if (!rangeResult.ok) {
+    return NextResponse.json({ error: rangeResult.error }, { status: 400 });
+  }
+  const { from, to } = rangeResult.range;
+
+  const bookingDateFieldId = getBookingDateFieldId();
+  if (!bookingDateFieldId) {
+    return NextResponse.json(
+      { error: "Server is missing GHL_BOOKING_DATE_FIELD_ID — contact an admin." },
+      { status: 500 },
+    );
+  }
+
   let locationId: string;
   try {
     locationId = getLocationId();
@@ -73,45 +100,71 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
+  const startedAt = Date.now();
+  const warnings: string[] = [];
+
   try {
+    console.log(`${LOG} starting; tz=${tz} from=${from} to=${to}`);
+
     const contacts = await searchContactsByTag("calendly-bookings", locationId);
-    const today = todayKey(tz);
+    console.log(`${LOG} search returned ${contacts.length} contact(s)`);
 
-    const limit = pLimit(5);
-    const enriched = await Promise.all(
-      contacts.map((contact) =>
-        limit(async (): Promise<PickupContact | null> => {
-          let appointments: GhlAppointment[] = [];
-          try {
-            appointments = await getContactAppointments(contact.id, locationId);
-          } catch {
-            return null;
-          }
-          const todays = appointments.filter(
-            (a) => a.startTime && dateKeyInTz(a.startTime, tz) === today,
-          );
-          if (todays.length === 0) return null;
-          // Pick the earliest of today's appointments.
-          todays.sort((a, b) => a.startTime.localeCompare(b.startTime));
-          const appt = todays[0];
-          return {
-            id: contact.id,
-            name: contactName(contact),
-            phone: contact.phone ?? null,
-            email: contact.email ?? null,
-            appointmentTime: appt.startTime,
-            appointmentNotes: appt.notes ?? null,
-            tags: contact.tags ?? [],
-          };
-        }),
-      ),
+    let withCustomFields = 0;
+    let parseFailures = 0;
+    let exampleLogged = false;
+    const rows: PickupContact[] = [];
+
+    for (const contact of contacts) {
+      if (contact.customFields && contact.customFields.length > 0) withCustomFields++;
+      const raw = readContactCustomField(contact, bookingDateFieldId);
+      if (raw === undefined || raw === null || raw === "") continue;
+
+      const dateKey = bookingDateKeyInTz(raw, tz);
+      if (dateKey === null) {
+        parseFailures++;
+        continue;
+      }
+
+      if (!exampleLogged) {
+        console.log(
+          `${LOG} sample raw=${JSON.stringify(raw)} type=${typeof raw} → dateKey=${dateKey}`,
+        );
+        exampleLogged = true;
+      }
+
+      // YYYY-MM-DD strings sort lexicographically; range check is two
+      // string comparisons.
+      if (dateKey < from || dateKey > to) continue;
+
+      rows.push({
+        id: contact.id,
+        name: contactName(contact),
+        phone: contact.phone ?? null,
+        email: contact.email ?? null,
+        appointmentTime: appointmentTimeIso(raw, dateKey),
+        appointmentNotes: null,
+        tags: contact.tags ?? [],
+      });
+    }
+
+    if (contacts.length > 0 && withCustomFields === 0) {
+      warnings.push(
+        "GHL search returned contacts but none included customFields. The Private Integration token may be missing the custom-fields scope.",
+      );
+    }
+    if (parseFailures > 0) {
+      warnings.push(`${parseFailures} contact(s) had unparseable booking-date values.`);
+    }
+
+    rows.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
+
+    console.log(
+      `${LOG} done in ${Date.now() - startedAt}ms — matched=${rows.length}`,
     );
-
-    const filtered = enriched.filter((p): p is PickupContact => p !== null);
-    filtered.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
-    return NextResponse.json({ contacts: filtered });
+    return NextResponse.json({ contacts: rows, warnings });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error(`${LOG} failed after ${Date.now() - startedAt}ms: ${message}`);
+    return NextResponse.json({ error: message, warnings }, { status: 500 });
   }
 }
