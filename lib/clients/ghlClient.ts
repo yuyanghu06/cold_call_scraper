@@ -7,7 +7,10 @@
 import { createPacer, parseRetryAfter } from "@/lib/clients/attioClient";
 
 const DEFAULT_BASE = "https://services.leadconnectorhq.com";
-const VERSION_HEADER = "2021-07-28";
+const DEFAULT_VERSION = "2021-07-28";
+// GHL versions API headers per surface. Calendars use a different version
+// than contacts, and sending the wrong one returns an empty result silently.
+const CALENDAR_VERSION = "2021-04-15";
 const RATE_PER_SEC = 10;
 const PACE_INTERVAL_MS = Math.ceil(1000 / RATE_PER_SEC);
 const MAX_ATTEMPTS = 4;
@@ -69,10 +72,12 @@ export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
+  options?: { version?: string },
 ): Promise<Response> {
   const apiKey = getApiKey();
   const url = `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const serialized = body === undefined ? undefined : JSON.stringify(body);
+  const versionHeader = options?.version ?? DEFAULT_VERSION;
 
   let timeoutAttempts = 0;
   let netErrAttempts = 0;
@@ -88,7 +93,7 @@ export async function ghlRequest(
           "Content-Type": "application/json",
           Accept: "application/json",
           Authorization: `Bearer ${apiKey}`,
-          Version: VERSION_HEADER,
+          Version: versionHeader,
         },
         body: serialized,
         signal: ctl.signal,
@@ -298,6 +303,9 @@ interface CalendarEventsResponse {
 // Fetch every event on `calendarId` whose startTime falls inside the
 // epoch-ms window. We use this instead of contact-tag search so the
 // pickup screen sees every booking regardless of post-call tag swaps.
+//
+// Calendar endpoints require Version 2021-04-15 — sending the contacts
+// version (2021-07-28) returns an empty result silently.
 export async function getCalendarEvents(
   calendarId: string,
   locationId: string,
@@ -311,12 +319,34 @@ export async function getCalendarEvents(
     endTime: String(endTimeMs),
   });
   const t0 = Date.now();
-  const res = await ghlRequest("GET", `/calendars/events?${params.toString()}`);
-  const json = (await res.json()) as CalendarEventsResponse;
+  const res = await ghlRequest(
+    "GET",
+    `/calendars/events?${params.toString()}`,
+    undefined,
+    { version: CALENDAR_VERSION },
+  );
+  const text = await res.text();
+  let json: CalendarEventsResponse = {};
+  try {
+    json = JSON.parse(text) as CalendarEventsResponse;
+  } catch {
+    // Fall through with empty events; the body snippet below will tell us
+    // why GHL returned a non-JSON payload.
+  }
   const events = json.events ?? json.appointments ?? [];
   console.log(
     `[ghl] /calendars/events calendarId=${calendarId} window=${startTimeMs}-${endTimeMs} got=${events.length} in ${Date.now() - t0}ms`,
   );
+  // Empty results are easy to misdiagnose ("the calendar has no events"
+  // vs "GHL doesn't like our request"). Log the response shape so the
+  // dev terminal makes the difference obvious.
+  if (events.length === 0) {
+    const snippet = text.length > 240 ? `${text.slice(0, 240)}…` : text;
+    const keys = Object.keys(json).join(",") || "(empty)";
+    console.log(
+      `[ghl] /calendars/events empty body keys=${keys} body=${snippet}`,
+    );
+  }
   return events;
 }
 
