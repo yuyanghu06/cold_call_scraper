@@ -1,8 +1,12 @@
-// GET /api/ghl/pickups/today?tz=America/New_York
+// GET /api/ghl/pickups/today?tz=America/New_York&from=YYYY-MM-DD&to=YYYY-MM-DD
 //
-// Returns the contacts whose `booking date` custom field equals today in
-// the caller's timezone. One paginated GHL search (filtered to the
-// `calendly-bookings` tag), then a client-side date-string comparison.
+// Returns the contacts whose `booking date` custom field falls inside the
+// requested calendar-date window in the caller's timezone. One paginated GHL
+// search (filtered to the `calendly-bookings` tag), then a client-side
+// date-string range comparison.
+//
+// Backwards-compat: with no `from`/`to`, the window is today/today (the
+// original behavior). The route name stays for older iOS builds.
 
 import { NextResponse } from "next/server";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
@@ -15,6 +19,7 @@ import {
   searchContactsByTag,
   type GhlContact,
 } from "@/lib/clients/ghlClient";
+import { resolveRange } from "@/lib/pickup-date-range";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -29,10 +34,6 @@ interface PickupContact {
   appointmentTime: string;
   appointmentNotes: string | null;
   tags: string[];
-}
-
-function todayKey(tz: string): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: tz });
 }
 
 function isValidTimeZone(tz: string): boolean {
@@ -73,6 +74,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: `Invalid tz: ${tz}` }, { status: 400 });
   }
 
+  const rangeResult = resolveRange(
+    url.searchParams.get("from"),
+    url.searchParams.get("to"),
+    tz,
+  );
+  if (!rangeResult.ok) {
+    return NextResponse.json({ error: rangeResult.error }, { status: 400 });
+  }
+  const { from, to } = rangeResult.range;
+
   const bookingDateFieldId = getBookingDateFieldId();
   if (!bookingDateFieldId) {
     return NextResponse.json(
@@ -93,8 +104,7 @@ export async function GET(req: Request) {
   const warnings: string[] = [];
 
   try {
-    const today = todayKey(tz);
-    console.log(`${LOG} starting; tz=${tz} today=${today}`);
+    console.log(`${LOG} starting; tz=${tz} from=${from} to=${to}`);
 
     const contacts = await searchContactsByTag("calendly-bookings", locationId);
     console.log(`${LOG} search returned ${contacts.length} contact(s)`);
@@ -115,8 +125,6 @@ export async function GET(req: Request) {
         continue;
       }
 
-      // Log one real example so the dev terminal shows the actual storage
-      // format — invaluable when the parser misfires on a tz boundary.
       if (!exampleLogged) {
         console.log(
           `${LOG} sample raw=${JSON.stringify(raw)} type=${typeof raw} → dateKey=${dateKey}`,
@@ -124,7 +132,9 @@ export async function GET(req: Request) {
         exampleLogged = true;
       }
 
-      if (dateKey !== today) continue;
+      // YYYY-MM-DD strings sort lexicographically; range check is two
+      // string comparisons.
+      if (dateKey < from || dateKey > to) continue;
 
       rows.push({
         id: contact.id,
@@ -149,7 +159,7 @@ export async function GET(req: Request) {
     rows.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
 
     console.log(
-      `${LOG} done in ${Date.now() - startedAt}ms — matchedToday=${rows.length}`,
+      `${LOG} done in ${Date.now() - startedAt}ms — matched=${rows.length}`,
     );
     return NextResponse.json({ contacts: rows, warnings });
   } catch (err) {
