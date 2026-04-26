@@ -13,6 +13,7 @@
     "list-slugs": "tsx scripts/list-attio-slugs.ts"
   },
   "dependencies": {
+    "googleapis": "^171.4.0",
     "next": "^15.0.0",
     "next-auth": "^5.0.0-beta.31",
     "p-limit": "^6.1.0",
