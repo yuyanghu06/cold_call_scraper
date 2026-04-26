@@ -43,6 +43,18 @@ export function getLocationId(): string {
   return raw.trim();
 }
 
+// Optional: comma-separated calendar IDs the pickup screen should query.
+// When set, /api/ghl/pickups/today uses the much-faster calendar-events
+// endpoint instead of iterating per-contact appointments.
+export function getPickupCalendarIds(): string[] {
+  const raw = process.env.GHL_CALENDAR_ID ?? process.env.GHL_CALENDAR_IDS;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -181,6 +193,44 @@ export async function searchContactsByTag(
 interface AppointmentsResponse {
   events?: GhlAppointment[];
   appointments?: GhlAppointment[];
+}
+
+// Fetch every appointment on `calendarId` between two epoch-ms timestamps.
+// Used by the pickup screen to scope to today's events, which sidesteps the
+// cumulative `calendly-bookings` tag entirely.
+export async function getCalendarEventsInRange(
+  calendarId: string,
+  locationId: string,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<GhlAppointment[]> {
+  const params = new URLSearchParams({
+    locationId,
+    calendarId,
+    startTime: String(startTimeMs),
+    endTime: String(endTimeMs),
+  });
+  const t0 = Date.now();
+  const res = await ghlRequest("GET", `/calendars/events?${params.toString()}`);
+  const json = (await res.json()) as AppointmentsResponse;
+  const events = json.events ?? json.appointments ?? [];
+  console.log(
+    `[ghl] /calendars/events calendarId=${calendarId} window=${startTimeMs}-${endTimeMs} got=${events.length} in ${Date.now() - t0}ms`,
+  );
+  return events;
+}
+
+export async function getContact(
+  contactId: string,
+  locationId: string,
+): Promise<GhlContact | null> {
+  const params = new URLSearchParams({ locationId });
+  const res = await ghlRequest(
+    "GET",
+    `/contacts/${encodeURIComponent(contactId)}?${params.toString()}`,
+  );
+  const json = (await res.json()) as { contact?: GhlContact };
+  return json.contact ?? null;
 }
 
 export async function getContactAppointments(
