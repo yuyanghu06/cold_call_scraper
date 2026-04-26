@@ -1,12 +1,22 @@
 // GET /api/ghl/pickups/today?tz=America/New_York&from=YYYY-MM-DD&to=YYYY-MM-DD
 //
-// Returns the contacts whose `booking date` custom field falls inside the
-// requested calendar-date window in the caller's timezone. One paginated GHL
-// search (filtered to the `calendly-bookings` tag), then a client-side
-// date-string range comparison.
+// Lists every contact whose `booking date` custom field falls inside the
+// requested calendar window, regardless of whether they've been tagged
+// `picked_up` / `no_pickup` afterward. The iOS app does Pending / Picked
+// up / No pickup / All filtering client-side off the contact's `tags`,
+// so we have to surface the full set.
 //
-// Backwards-compat: with no `from`/`to`, the window is today/today (the
-// original behavior). The route name stays for older iOS builds.
+// Driver:
+//   1. Search contacts by tag, three times — the bookings live under one
+//      of `calendly-bookings`, `picked_up`, `no_pickup` depending on
+//      what's happened to the booking since it was created. The tag-swap
+//      routes (/picked-up, /no-pickup) strip `calendly-bookings` when
+//      they apply the new outcome, so any single-tag query loses the
+//      already-completed records.
+//   2. Dedupe by contact id (a contact only ever carries one of the
+//      three states, but the union pattern is defensive).
+//   3. Filter client-side: keep only contacts whose `contact.booking`
+//      custom-field value falls inside the [from, to] window.
 //
 // Response per contact (additive — older iOS builds ignore unknown keys):
 //   { id, name, phone, email, appointmentTime, appointmentNotes, tags,
@@ -36,6 +46,11 @@ export const maxDuration = 60;
 
 const LOG = "[ghl/pickups/today]";
 
+// Every state a calendly booking can be in. We search each separately and
+// union the results so completed pickups (picked_up / no_pickup) are still
+// returned alongside pending ones.
+const PICKUP_TAG_STATES = ["calendly-bookings", "picked_up", "no_pickup"] as const;
+
 interface PickupContact {
   id: string;
   name: string;
@@ -45,25 +60,6 @@ interface PickupContact {
   appointmentNotes: string | null;
   tags: string[];
   discoverySource: string | null;
-}
-
-// Normalize a raw value (custom-field value or top-level attribute) into the
-// `string | null` discoverySource shape: trim whitespace, treat empties as
-// null, coerce non-strings to string when meaningful.
-function normalizeDiscoveryValue(raw: unknown): string | null {
-  if (raw === undefined || raw === null) return null;
-  const s = typeof raw === "string" ? raw : String(raw);
-  const trimmed = s.trim();
-  if (!trimmed) return null;
-  return trimmed;
-}
-
-function resolveDiscoverySource(c: GhlContact): string | null {
-  const fromCustom = normalizeDiscoveryValue(
-    findCustomFieldByName(c, "discovery_source"),
-  );
-  if (fromCustom !== null) return fromCustom;
-  return normalizeDiscoveryValue(c.source);
 }
 
 function isValidTimeZone(tz: string): boolean {
@@ -82,10 +78,22 @@ function contactName(c: GhlContact): string {
   return parts || c.email || c.phone || c.id;
 }
 
-// Build the iOS-facing `appointmentTime` for a contact. We always return an
-// ISO string, but the underlying storage format varies (date-only string,
-// UTC-midnight ms, or a real instant), so we render the most accurate ISO
-// we can from each.
+function normalizeDiscoveryValue(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  const s = typeof raw === "string" ? raw : String(raw);
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  return trimmed;
+}
+
+function resolveDiscoverySource(c: GhlContact): string | null {
+  const fromCustom = normalizeDiscoveryValue(
+    findCustomFieldByName(c, "discovery_source"),
+  );
+  if (fromCustom !== null) return fromCustom;
+  return normalizeDiscoveryValue(c.source);
+}
+
 function appointmentTimeIso(raw: unknown, dateKey: string): string {
   const ms = parseDateAsEpochMs(raw);
   if (ms !== null) return new Date(ms).toISOString();
@@ -136,15 +144,31 @@ export async function GET(req: Request) {
   try {
     console.log(`${LOG} starting; tz=${tz} from=${from} to=${to}`);
 
-    const contacts = await searchContactsByTag("calendly-bookings", locationId);
-    console.log(`${LOG} search returned ${contacts.length} contact(s)`);
+    // Three sequential tag searches (small, ~1s total). We could parallel
+    // them but the GHL pacer would serialize the requests anyway.
+    const seen = new Set<string>();
+    const allContacts: GhlContact[] = [];
+    for (const tag of PICKUP_TAG_STATES) {
+      try {
+        const batch = await searchContactsByTag(tag, locationId);
+        for (const c of batch) {
+          if (seen.has(c.id)) continue;
+          seen.add(c.id);
+          allContacts.push(c);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        warnings.push(`Tag search for "${tag}" failed: ${message}`);
+      }
+    }
+    console.log(`${LOG} unioned ${allContacts.length} unique contact(s) across tags`);
 
     let withCustomFields = 0;
     let parseFailures = 0;
     let exampleLogged = false;
     const rows: PickupContact[] = [];
 
-    for (const contact of contacts) {
+    for (const contact of allContacts) {
       if (contact.customFields && contact.customFields.length > 0) withCustomFields++;
       const raw = readContactCustomField(contact, bookingDateFieldId);
       if (raw === undefined || raw === null || raw === "") continue;
@@ -155,6 +179,8 @@ export async function GET(req: Request) {
         continue;
       }
 
+      // Log one real example so the dev terminal shows the actual storage
+      // format — invaluable when the parser misfires on a tz boundary.
       if (!exampleLogged) {
         console.log(
           `${LOG} sample raw=${JSON.stringify(raw)} type=${typeof raw} → dateKey=${dateKey}`,
@@ -162,8 +188,7 @@ export async function GET(req: Request) {
         exampleLogged = true;
       }
 
-      // YYYY-MM-DD strings sort lexicographically; range check is two
-      // string comparisons.
+      // YYYY-MM-DD strings sort lexicographically.
       if (dateKey < from || dateKey > to) continue;
 
       rows.push({
@@ -178,7 +203,7 @@ export async function GET(req: Request) {
       });
     }
 
-    if (contacts.length > 0 && withCustomFields === 0) {
+    if (allContacts.length > 0 && withCustomFields === 0) {
       warnings.push(
         "GHL search returned contacts but none included customFields. The Private Integration token may be missing the custom-fields scope.",
       );

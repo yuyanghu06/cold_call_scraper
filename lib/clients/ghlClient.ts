@@ -7,7 +7,10 @@
 import { createPacer, parseRetryAfter } from "@/lib/clients/attioClient";
 
 const DEFAULT_BASE = "https://services.leadconnectorhq.com";
-const VERSION_HEADER = "2021-07-28";
+const DEFAULT_VERSION = "2021-07-28";
+// GHL versions API headers per surface. Calendars use a different version
+// than contacts, and sending the wrong one returns an empty result silently.
+const CALENDAR_VERSION = "2021-04-15";
 const RATE_PER_SEC = 10;
 const PACE_INTERVAL_MS = Math.ceil(1000 / RATE_PER_SEC);
 const MAX_ATTEMPTS = 4;
@@ -52,14 +55,29 @@ export function getBookingDateFieldId(): string | null {
   return raw.trim();
 }
 
+// Calendar id(s) the pickup screen scopes events to. Required now that
+// /api/ghl/pickups/today queries calendar-events directly — without
+// scoping we'd return every event at the location (e.g. internal team
+// meetings) as a "pickup". Single id or comma-separated.
+export function getPickupCalendarIds(): string[] {
+  const raw = process.env.GHL_CALENDAR_ID ?? process.env.GHL_CALENDAR_IDS;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
+  options?: { version?: string },
 ): Promise<Response> {
   const apiKey = getApiKey();
   const url = `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const serialized = body === undefined ? undefined : JSON.stringify(body);
+  const versionHeader = options?.version ?? DEFAULT_VERSION;
 
   let timeoutAttempts = 0;
   let netErrAttempts = 0;
@@ -75,7 +93,7 @@ export async function ghlRequest(
           "Content-Type": "application/json",
           Accept: "application/json",
           Authorization: `Bearer ${apiKey}`,
-          Version: VERSION_HEADER,
+          Version: versionHeader,
         },
         body: serialized,
         signal: ctl.signal,
@@ -261,6 +279,100 @@ export function bookingDateKeyInTz(raw: unknown, tz: string): string | null {
   return new Date(ms).toLocaleDateString("en-CA", {
     timeZone: isUtcMidnight ? "UTC" : tz,
   });
+}
+
+// ─── Calendar events ──────────────────────────────────────────────────────────
+
+export interface GhlAppointment {
+  id: string;
+  contactId: string;
+  title?: string;
+  startTime: string;        // ISO 8601, server-emitted
+  endTime?: string;
+  appointmentStatus?: string;
+  notes?: string;
+  calendarId?: string;
+  locationId?: string;
+}
+
+interface CalendarEventsResponse {
+  events?: GhlAppointment[];
+  appointments?: GhlAppointment[];
+}
+
+// Fetch every event on `calendarId` whose startTime falls inside the
+// epoch-ms window. We use this instead of contact-tag search so the
+// pickup screen sees every booking regardless of post-call tag swaps.
+//
+// GHL quirks worth not forgetting:
+//   - Calendar endpoints require Version 2021-04-15 (not 2021-07-28).
+//     Sending the wrong version returns an empty array silently.
+//   - startTime / endTime are ISO 8601 strings, NOT milliseconds.
+//     Sending raw ms also returns an empty array silently.
+export async function getCalendarEvents(
+  calendarId: string,
+  locationId: string,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<GhlAppointment[]> {
+  const startIso = new Date(startTimeMs).toISOString();
+  const endIso = new Date(endTimeMs).toISOString();
+  const params = new URLSearchParams({
+    locationId,
+    calendarId,
+    startTime: startIso,
+    endTime: endIso,
+  });
+  const path = `/calendars/events?${params.toString()}`;
+  const t0 = Date.now();
+  const res = await ghlRequest("GET", path, undefined, {
+    version: CALENDAR_VERSION,
+  });
+  const text = await res.text();
+  let json: CalendarEventsResponse = {};
+  try {
+    json = JSON.parse(text) as CalendarEventsResponse;
+  } catch {
+    // Fall through with empty events; the body snippet below tells us
+    // why GHL returned a non-JSON payload.
+  }
+  const events = json.events ?? json.appointments ?? [];
+  console.log(
+    `[ghl] /calendars/events calendarId=${calendarId} window=${startIso}..${endIso} got=${events.length} in ${Date.now() - t0}ms`,
+  );
+  // Empty results are easy to misdiagnose ("the calendar has no events"
+  // vs "GHL doesn't like our request"). Log the response shape so the
+  // dev terminal makes the difference obvious without another round trip.
+  if (events.length === 0) {
+    const snippet = text.length > 400 ? `${text.slice(0, 400)}…` : text;
+    const keys = Object.keys(json).join(",") || "(empty)";
+    console.log(
+      `[ghl] /calendars/events empty status=${res.status} keys=${keys} body=${snippet}`,
+    );
+  }
+  return events;
+}
+
+// Fetch a single contact's full record. Returns the contact object (with
+// tags, customFields, source) or null if the service can't see / find it.
+export async function getContact(
+  contactId: string,
+  locationId: string,
+): Promise<GhlContact | null> {
+  const params = new URLSearchParams({ locationId });
+  try {
+    const res = await ghlRequest(
+      "GET",
+      `/contacts/${encodeURIComponent(contactId)}?${params.toString()}`,
+    );
+    const json = (await res.json()) as { contact?: GhlContact };
+    return json.contact ?? null;
+  } catch (err) {
+    const status = (err as { status?: number; code?: number })?.status
+      ?? (err as { status?: number; code?: number })?.code;
+    if (status === 404) return null;
+    throw err;
+  }
 }
 
 interface TagMutationResponse {
