@@ -1,13 +1,13 @@
 // GET /api/ghl/pickups/today?tz=America/New_York
 //
-// Returns the contacts whose `booking date` custom field falls inside today
-// in the requested timezone. One paginated GHL search (filtered to the
-// `calendly-bookings` tag), then a client-side filter on the custom-field
-// value. No per-contact fan-out, no calendar-events lookup.
+// Returns the contacts whose `booking date` custom field equals today in
+// the caller's timezone. One paginated GHL search (filtered to the
+// `calendly-bookings` tag), then a client-side date-string comparison.
 
 import { NextResponse } from "next/server";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
 import {
+  bookingDateKeyInTz,
   getBookingDateFieldId,
   getLocationId,
   parseDateAsEpochMs,
@@ -44,32 +44,21 @@ function isValidTimeZone(tz: string): boolean {
   }
 }
 
-// [start, end) of the local day for `tz` as epoch-ms. Used to bracket the
-// booking-date custom-field values, which GHL stores as ms.
-function todayBoundsEpochMs(tz: string): { startMs: number; endMs: number } {
-  const today = todayKey(tz);
-  const startUtcGuess = Date.parse(`${today}T00:00:00Z`);
-  const endUtcGuess = startUtcGuess + 24 * 60 * 60 * 1000;
-  // Sample tz-local "now" against UTC "now" to derive the offset.
-  const tzOffsetMs = (() => {
-    const now = new Date();
-    const local = Date.parse(
-      now.toLocaleString("en-US", { timeZone: tz, hour12: false }),
-    );
-    if (Number.isNaN(local)) return 0;
-    return now.getTime() - local;
-  })();
-  return {
-    startMs: startUtcGuess + tzOffsetMs,
-    endMs: endUtcGuess + tzOffsetMs,
-  };
-}
-
 function contactName(c: GhlContact): string {
   if (c.name && c.name.trim()) return c.name.trim();
   if (c.contactName && c.contactName.trim()) return c.contactName.trim();
   const parts = [c.firstName, c.lastName].filter((p) => p && p.trim()).join(" ");
   return parts || c.email || c.phone || c.id;
+}
+
+// Build the iOS-facing `appointmentTime` for a contact. We always return an
+// ISO string, but the underlying storage format varies (date-only string,
+// UTC-midnight ms, or a real instant), so we render the most accurate ISO
+// we can from each.
+function appointmentTimeIso(raw: unknown, dateKey: string): string {
+  const ms = parseDateAsEpochMs(raw);
+  if (ms !== null) return new Date(ms).toISOString();
+  return `${dateKey}T00:00:00.000Z`;
 }
 
 export async function GET(req: Request) {
@@ -104,31 +93,45 @@ export async function GET(req: Request) {
   const warnings: string[] = [];
 
   try {
-    const { startMs, endMs } = todayBoundsEpochMs(tz);
-    console.log(`${LOG} starting; tz=${tz} window=${startMs}-${endMs}`);
+    const today = todayKey(tz);
+    console.log(`${LOG} starting; tz=${tz} today=${today}`);
 
     const contacts = await searchContactsByTag("calendly-bookings", locationId);
     console.log(`${LOG} search returned ${contacts.length} contact(s)`);
 
     let withCustomFields = 0;
     let parseFailures = 0;
+    let exampleLogged = false;
     const rows: PickupContact[] = [];
+
     for (const contact of contacts) {
       if (contact.customFields && contact.customFields.length > 0) withCustomFields++;
       const raw = readContactCustomField(contact, bookingDateFieldId);
       if (raw === undefined || raw === null || raw === "") continue;
-      const ms = parseDateAsEpochMs(raw);
-      if (ms === null) {
+
+      const dateKey = bookingDateKeyInTz(raw, tz);
+      if (dateKey === null) {
         parseFailures++;
         continue;
       }
-      if (ms < startMs || ms >= endMs) continue;
+
+      // Log one real example so the dev terminal shows the actual storage
+      // format — invaluable when the parser misfires on a tz boundary.
+      if (!exampleLogged) {
+        console.log(
+          `${LOG} sample raw=${JSON.stringify(raw)} type=${typeof raw} → dateKey=${dateKey}`,
+        );
+        exampleLogged = true;
+      }
+
+      if (dateKey !== today) continue;
+
       rows.push({
         id: contact.id,
         name: contactName(contact),
         phone: contact.phone ?? null,
         email: contact.email ?? null,
-        appointmentTime: new Date(ms).toISOString(),
+        appointmentTime: appointmentTimeIso(raw, dateKey),
         appointmentNotes: null,
         tags: contact.tags ?? [],
       });

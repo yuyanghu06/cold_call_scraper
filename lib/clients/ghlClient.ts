@@ -206,6 +206,31 @@ export function parseDateAsEpochMs(raw: unknown): number | null {
   return null;
 }
 
+// Calendar-date key (YYYY-MM-DD) for a custom-field value. The semantics
+// differ by storage format:
+//
+//   - "YYYY-MM-DD" string  → that calendar date verbatim. Tz is irrelevant.
+//   - ms at exactly UTC midnight (n % 86_400_000 === 0) → GHL's storage
+//     for a date-typed custom field. Format as UTC, NOT the caller's tz —
+//     otherwise a "2026-04-27" booking reads as 2026-04-26 in NY because
+//     UTC midnight is the previous evening locally.
+//   - any other instant (ms or ISO with time) → project into the caller's
+//     tz and format. This is the right call for datetime-typed fields.
+//
+// Returns null on unparseable values.
+export function bookingDateKeyInTz(raw: unknown, tz: string): string | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  }
+  const ms = parseDateAsEpochMs(raw);
+  if (ms === null) return null;
+  const isUtcMidnight = ms % 86_400_000 === 0;
+  return new Date(ms).toLocaleDateString("en-CA", {
+    timeZone: isUtcMidnight ? "UTC" : tz,
+  });
+}
+
 interface TagMutationResponse {
   tags?: string[];
 }
