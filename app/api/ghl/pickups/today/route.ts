@@ -1,32 +1,32 @@
 // GET /api/ghl/pickups/today?tz=America/New_York
 //
 // Returns the contacts whose appointment falls on today in the requested
-// timezone, enriched with the matching appointment time + notes for the iOS
-// pickup screen.
+// timezone, enriched with the booking time + tags for the iOS pickup screen.
 //
-// Two strategies, picked by env:
+// Strategies, in order of preference:
 //
-//   1. (preferred) GHL_CALENDAR_ID set — query /calendars/events directly
-//      with today's epoch-ms window. One call per calendar, regardless of
-//      how many historical bookers carry the calendly-bookings tag.
+//   1. (preferred) GHL_BOOKING_DATE_FIELD_ID set — POST /contacts/search
+//      filtered to today's window on that custom date field. One call,
+//      O(today's bookings), independent of historical tag accumulation.
 //
-//   2. (fallback) GHL_CALENDAR_ID not set — iterate contacts tagged
-//      `calendly-bookings` and pull each contact's appointments. We cap this
-//      hard because the tag is cumulative and 300+ contacts × 100ms pacing
-//      pins the route to Vercel's 60s ceiling.
+//   2. GHL_CALENDAR_ID set — query /calendars/events directly for today,
+//      then look up the contact for each unique booking.
 //
-// Diagnostics: every phase logs `[ghl/pickups/today] …` to the server console
-// so the dev terminal (or Vercel logs) shows where time goes.
+//   3. (fallback) tag-based scan, capped at 50 contacts. Only useful for
+//      tiny installs; will warn the operator that it's degraded.
 
 import { NextResponse } from "next/server";
 import pLimit from "p-limit";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
 import {
+  getBookingDateFieldId,
   getCalendarEventsInRange,
   getContact,
   getContactAppointments,
   getLocationId,
   getPickupCalendarIds,
+  readContactCustomField,
+  searchContactsByBookingDate,
   searchContactsByTag,
   type GhlAppointment,
   type GhlContact,
@@ -36,8 +36,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const LOG = "[ghl/pickups/today]";
-// Hard cap on the per-contact fallback path. 50 contacts × ~150ms paced =
-// ~8s — leaves plenty of headroom under the 60s function ceiling.
 const FALLBACK_MAX_CONTACTS = 50;
 const SOFT_BUDGET_MS = 45_000;
 
@@ -68,18 +66,11 @@ function isValidTimeZone(tz: string): boolean {
   }
 }
 
-// Returns the [start, end] of the local day for `tz` as epoch-ms.
-// We need the calendar window in epoch-ms to query GHL's /calendars/events.
+// Returns the [start, end) of the local day for `tz` as epoch-ms.
 function todayBoundsEpochMs(tz: string): { startMs: number; endMs: number } {
   const today = todayKey(tz);
-  // Date.parse on "YYYY-MM-DD" treats it as UTC midnight, which is wrong for
-  // any tz != UTC. Construct an offset by sampling Intl's tz output for the
-  // current instant and the local-day midnight candidate.
   const startUtcGuess = Date.parse(`${today}T00:00:00Z`);
-  const endUtcGuess = Date.parse(`${today}T23:59:59.999Z`);
-  // Adjust by the difference between tz-local "now" and UTC "now". This is
-  // accurate within a day for all fixed-offset and DST tzs because we're
-  // landing inside one DST window for a single calendar day.
+  const endUtcGuess = Date.parse(`${today}T00:00:00Z`) + 24 * 60 * 60 * 1000;
   const tzOffsetMs = (() => {
     const now = new Date();
     const utc = now.getTime();
@@ -103,6 +94,25 @@ function contactName(c: GhlContact | null, fallbackId: string): string {
   return parts || c.email || c.phone || c.id;
 }
 
+// Custom-field date values come in either as epoch-ms (number or numeric
+// string) or as an ISO 8601 string. Normalize to ISO so the iOS payload
+// is always the same shape.
+function normalizeBookingTime(raw: unknown): string | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return new Date(raw).toISOString();
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const trimmed = raw.trim();
+    const asNum = Number(trimmed);
+    if (Number.isFinite(asNum) && /^\d+$/.test(trimmed)) {
+      return new Date(asNum).toISOString();
+    }
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+  }
+  return null;
+}
+
 export async function GET(req: Request) {
   const user = await authedUserFromRequest(req);
   if (!user) {
@@ -123,15 +133,29 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
+  const bookingDateFieldId = getBookingDateFieldId();
   const calendarIds = getPickupCalendarIds();
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
   const warnings: string[] = [];
 
   try {
+    if (bookingDateFieldId) {
+      console.log(
+        `${LOG} starting booking-date path; tz=${tz} fieldId=${bookingDateFieldId}`,
+      );
+      const result = await runBookingDatePath({
+        bookingDateFieldId,
+        locationId,
+        tz,
+      });
+      console.log(`${LOG} done in ${elapsed()}ms — matchedToday=${result.length}`);
+      return NextResponse.json({ contacts: result, warnings });
+    }
+
     if (calendarIds.length > 0) {
       console.log(
-        `${LOG} starting calendar-fast path; tz=${tz} calendars=${calendarIds.length}`,
+        `${LOG} starting calendar path; tz=${tz} calendars=${calendarIds.length}`,
       );
       const result = await runCalendarPath({
         calendarIds,
@@ -145,7 +169,7 @@ export async function GET(req: Request) {
 
     console.log(`${LOG} starting tag fallback; tz=${tz}`);
     warnings.push(
-      "Set GHL_CALENDAR_ID for a much faster pickup query. Falling back to tag-based scan, capped to "
+      "Set GHL_BOOKING_DATE_FIELD_ID for the supported fast path. Falling back to tag-based scan, capped to "
         + `${FALLBACK_MAX_CONTACTS} contacts.`,
     );
     const result = await runTagFallback({
@@ -161,6 +185,39 @@ export async function GET(req: Request) {
     console.error(`${LOG} failed after ${elapsed()}ms: ${message}`);
     return NextResponse.json({ error: message, warnings }, { status: 500 });
   }
+}
+
+async function runBookingDatePath(args: {
+  bookingDateFieldId: string;
+  locationId: string;
+  tz: string;
+}): Promise<PickupContact[]> {
+  const { bookingDateFieldId, locationId, tz } = args;
+  const { startMs, endMs } = todayBoundsEpochMs(tz);
+  const contacts = await searchContactsByBookingDate(
+    bookingDateFieldId,
+    locationId,
+    startMs,
+    endMs,
+  );
+
+  const rows: PickupContact[] = [];
+  for (const contact of contacts) {
+    const raw = readContactCustomField(contact, bookingDateFieldId);
+    const appointmentTime =
+      normalizeBookingTime(raw) ?? new Date(startMs).toISOString();
+    rows.push({
+      id: contact.id,
+      name: contactName(contact, contact.id),
+      phone: contact.phone ?? null,
+      email: contact.email ?? null,
+      appointmentTime,
+      appointmentNotes: null,
+      tags: contact.tags ?? [],
+    });
+  }
+  rows.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
+  return rows;
 }
 
 async function runCalendarPath(args: {
@@ -187,7 +244,6 @@ async function runCalendarPath(args: {
     ),
   );
 
-  // Take the earliest event per contact; one row per contact, not per event.
   const earliestByContact = new Map<string, GhlAppointment>();
   for (const batch of eventBatches) {
     for (const event of batch) {
@@ -202,7 +258,6 @@ async function runCalendarPath(args: {
 
   if (earliestByContact.size === 0) return [];
 
-  // Fetch contact details for the (typically small) set of unique contacts.
   const contactLimit = pLimit(5);
   const contactEntries = Array.from(earliestByContact.entries());
   const enriched = await Promise.all(

@@ -55,6 +55,15 @@ export function getPickupCalendarIds(): string[] {
     .filter(Boolean);
 }
 
+// Custom-field id on GHL Contacts representing the appointment / booking
+// date. Used by /api/ghl/pickups/today as the primary fast path: one search
+// call filtered to today, no per-contact fan-out.
+export function getBookingDateFieldId(): string | null {
+  const raw = process.env.GHL_BOOKING_DATE_FIELD_ID;
+  if (!raw || !raw.trim()) return null;
+  return raw.trim();
+}
+
 export async function ghlRequest(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -129,6 +138,7 @@ export interface GhlContact {
   phone?: string;
   tags?: string[];
   locationId?: string;
+  customFields?: Array<{ id?: string; value?: unknown }>;
 }
 
 export interface GhlAppointment {
@@ -193,6 +203,62 @@ export async function searchContactsByTag(
 interface AppointmentsResponse {
   events?: GhlAppointment[];
   appointments?: GhlAppointment[];
+}
+
+// Search contacts whose `bookingDateFieldId` custom field falls inside the
+// given epoch-ms window. v2's POST /contacts/search accepts numeric custom
+// fields with `gte`/`lt` operators and ANDs filters in the array by default.
+//
+// We page defensively even though "today's bookings" should fit in one page
+// for any realistic operator's volume.
+export async function searchContactsByBookingDate(
+  bookingDateFieldId: string,
+  locationId: string,
+  startMs: number,
+  endMs: number,
+): Promise<GhlContact[]> {
+  const out: GhlContact[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; page <= 5; page++) {
+    const t0 = Date.now();
+    const res = await ghlRequest("POST", "/contacts/search", {
+      locationId,
+      pageLimit: 100,
+      page,
+      filters: [
+        { field: bookingDateFieldId, operator: "gte", value: startMs },
+        { field: bookingDateFieldId, operator: "lt", value: endMs },
+      ],
+    });
+    const json = (await res.json()) as SearchContactsResponse;
+    const batch = json.contacts ?? [];
+    console.log(
+      `[ghl] /contacts/search by booking-date page=${page} got=${batch.length} total=${
+        json.total ?? "?"
+      } in ${Date.now() - t0}ms`,
+    );
+    for (const c of batch) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push(c);
+    }
+    if (batch.length < 100) break;
+    if (typeof json.total === "number" && out.length >= json.total) break;
+  }
+  return out;
+}
+
+// Read a single custom-field value from a contact. The shape on v2 contacts
+// is `customFields: [{ id, value, ... }]`; this helper just looks up by id.
+export function readContactCustomField(
+  contact: GhlContact & { customFields?: Array<{ id?: string; value?: unknown }> },
+  fieldId: string,
+): unknown {
+  const fields = contact.customFields ?? [];
+  for (const f of fields) {
+    if (f?.id === fieldId) return f.value;
+  }
+  return undefined;
 }
 
 // Fetch every appointment on `calendarId` between two epoch-ms timestamps.
