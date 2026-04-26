@@ -53,11 +53,25 @@ function buildRequest(qs: Record<string, string>): Request {
   return new Request(url.toString());
 }
 
-function contact(id: string, bookingDate: string) {
+function contact(
+  id: string,
+  bookingDate: string,
+  extra: Partial<{
+    source: string;
+    customFields: Array<{ id?: string; name?: string; value?: unknown }>;
+    customField: Array<{ id?: string; fieldKey?: string; value?: unknown }>;
+  }> = {},
+) {
+  const customFields = [
+    { id: "field-1", value: bookingDate },
+    ...(extra.customFields ?? []),
+  ];
   return {
     id,
     name: id,
-    customFields: [{ id: "field-1", value: bookingDate }],
+    customFields,
+    ...(extra.customField ? { customField: extra.customField } : {}),
+    ...(extra.source !== undefined ? { source: extra.source } : {}),
   };
 }
 
@@ -190,5 +204,106 @@ describe("GET /api/ghl/pickups/today — date-range filtering", () => {
   it("?to=… without from → 400", async () => {
     const res = await GET(buildRequest({ to: "2026-04-26" }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/ghl/pickups/today — discoverySource", () => {
+  it("uses a matching custom field (v2 shape) over the top-level source", async () => {
+    searchContactsByTagMock.mockResolvedValue([
+      contact("a", "2026-04-26", {
+        source: "calendly",
+        customFields: [
+          { id: "f-other", name: "Other", value: "ignored" },
+          { id: "f-disc", name: "discovery_source", value: "Google Ads" },
+        ],
+      }),
+    ]);
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      contacts: Array<{ id: string; discoverySource: string | null }>;
+    };
+    expect(body.contacts[0].discoverySource).toBe("Google Ads");
+  });
+
+  it("uses the v1 fieldKey shape too (case-insensitive)", async () => {
+    searchContactsByTagMock.mockResolvedValue([
+      contact("b", "2026-04-26", {
+        customField: [
+          { id: "f-disc", fieldKey: "Discovery_Source", value: "Instagram" },
+        ],
+      }),
+    ]);
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
+    expect(body.contacts[0].discoverySource).toBe("Instagram");
+  });
+
+  it("falls back to the top-level `source` when no custom field matches", async () => {
+    searchContactsByTagMock.mockResolvedValue([
+      contact("c", "2026-04-26", { source: "  Facebook Ads  " }),
+    ]);
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
+    expect(body.contacts[0].discoverySource).toBe("Facebook Ads");
+  });
+
+  it("returns null when neither custom field nor source is set", async () => {
+    searchContactsByTagMock.mockResolvedValue([
+      contact("d", "2026-04-26"),
+    ]);
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
+    expect(body.contacts[0].discoverySource).toBeNull();
+  });
+
+  it("treats empty/whitespace custom-field values as null and falls through", async () => {
+    searchContactsByTagMock.mockResolvedValue([
+      contact("e", "2026-04-26", {
+        source: "TikTok",
+        customFields: [{ id: "f-disc", name: "discovery_source", value: "   " }],
+      }),
+    ]);
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
+    expect(body.contacts[0].discoverySource).toBe("TikTok");
   });
 });

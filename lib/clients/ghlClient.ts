@@ -126,7 +126,14 @@ export interface GhlContact {
   phone?: string;
   tags?: string[];
   locationId?: string;
-  customFields?: Array<{ id?: string; value?: unknown }>;
+  // Top-level GHL contact attribute. Used as a fallback when a discovery
+  // source custom field isn't set on the contact.
+  source?: string;
+  // v2 shape (services.leadconnectorhq.com): { id, value, name? }
+  customFields?: Array<{ id?: string; value?: unknown; name?: string }>;
+  // v1 shape (rest.gohighlevel.com): { id, fieldKey, value }. We support
+  // it because some GHL accounts still surface this on contact responses.
+  customField?: Array<{ id?: string; value?: unknown; fieldKey?: string }>;
 }
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -185,6 +192,31 @@ export function readContactCustomField(
   const fields = contact.customFields ?? [];
   for (const f of fields) {
     if (f?.id === fieldId) return f.value;
+  }
+  return undefined;
+}
+
+// Look up a custom-field value by the field's *name*, case-insensitively.
+// Handles both shapes a GHL contact response can carry:
+//   v2: `customFields: [{ id, name?, value }]`  — name may be present
+//   v1: `customField:  [{ id, fieldKey, value }]` — fieldKey is the slug
+// Returns the raw value (any type) or undefined if no match.
+export function findCustomFieldByName(
+  contact: GhlContact,
+  fieldName: string,
+): unknown {
+  const target = fieldName.toLowerCase();
+  if (contact.customFields) {
+    for (const f of contact.customFields) {
+      const name = typeof f?.name === "string" ? f.name.toLowerCase() : null;
+      if (name === target) return f.value;
+    }
+  }
+  if (contact.customField) {
+    for (const f of contact.customField) {
+      const key = typeof f?.fieldKey === "string" ? f.fieldKey.toLowerCase() : null;
+      if (key === target) return f.value;
+    }
   }
   return undefined;
 }

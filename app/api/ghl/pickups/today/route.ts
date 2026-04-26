@@ -7,11 +7,21 @@
 //
 // Backwards-compat: with no `from`/`to`, the window is today/today (the
 // original behavior). The route name stays for older iOS builds.
+//
+// Response per contact (additive — older iOS builds ignore unknown keys):
+//   { id, name, phone, email, appointmentTime, appointmentNotes, tags,
+//     discoverySource: string | null }
+//
+// `discoverySource` is sourced, in order:
+//   1. custom field whose name matches `discovery_source` (case-insensitive),
+//   2. the contact's top-level `source` attribute,
+//   3. null (also when the value is empty/whitespace).
 
 import { NextResponse } from "next/server";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
 import {
   bookingDateKeyInTz,
+  findCustomFieldByName,
   getBookingDateFieldId,
   getLocationId,
   parseDateAsEpochMs,
@@ -34,6 +44,26 @@ interface PickupContact {
   appointmentTime: string;
   appointmentNotes: string | null;
   tags: string[];
+  discoverySource: string | null;
+}
+
+// Normalize a raw value (custom-field value or top-level attribute) into the
+// `string | null` discoverySource shape: trim whitespace, treat empties as
+// null, coerce non-strings to string when meaningful.
+function normalizeDiscoveryValue(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  const s = typeof raw === "string" ? raw : String(raw);
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  return trimmed;
+}
+
+function resolveDiscoverySource(c: GhlContact): string | null {
+  const fromCustom = normalizeDiscoveryValue(
+    findCustomFieldByName(c, "discovery_source"),
+  );
+  if (fromCustom !== null) return fromCustom;
+  return normalizeDiscoveryValue(c.source);
 }
 
 function isValidTimeZone(tz: string): boolean {
@@ -144,6 +174,7 @@ export async function GET(req: Request) {
         appointmentTime: appointmentTimeIso(raw, dateKey),
         appointmentNotes: null,
         tags: contact.tags ?? [],
+        discoverySource: resolveDiscoverySource(contact),
       });
     }
 
