@@ -12,9 +12,14 @@ const RATE_PER_SEC = 10;
 const PACE_INTERVAL_MS = Math.ceil(1000 / RATE_PER_SEC);
 const MAX_ATTEMPTS = 4;
 // Per-request abort so a stalled GHL response doesn't pin the route up to
-// Vercel's 60s function timeout. We retry on 5xx/429, so a slow upstream
-// still gets a few shots before we give up.
-const REQUEST_TIMEOUT_MS = 10_000;
+// Vercel's 60s function timeout. Tight enough that even if every attempt
+// times out we throw before iOS's 60s URLSession timeout fires.
+const REQUEST_TIMEOUT_MS = 6_000;
+// Don't retry an aborted request — if upstream isn't responding within 6s,
+// retrying just burns the route's budget. Network errors (TypeError) still
+// retry once.
+const MAX_RETRIES_ON_TIMEOUT = 0;
+const MAX_RETRIES_ON_NETERR = 1;
 
 const pace = createPacer(PACE_INTERVAL_MS);
 
@@ -47,6 +52,8 @@ export async function ghlRequest(
   const url = `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const serialized = body === undefined ? undefined : JSON.stringify(body);
 
+  let timeoutAttempts = 0;
+  let netErrAttempts = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await pace();
     const ctl = new AbortController();
@@ -66,13 +73,18 @@ export async function ghlRequest(
       });
     } catch (err) {
       clearTimeout(timer);
-      const isLast = attempt === MAX_ATTEMPTS;
       const aborted = (err as { name?: string })?.name === "AbortError";
-      if (!isLast && (aborted || err instanceof TypeError)) {
-        await sleep(Math.min(500 * 2 ** (attempt - 1), 4000));
+      const isLast = attempt === MAX_ATTEMPTS;
+      if (aborted && timeoutAttempts < MAX_RETRIES_ON_TIMEOUT && !isLast) {
+        timeoutAttempts++;
         continue;
       }
-      const reason = aborted ? "timeout" : err instanceof Error ? err.message : String(err);
+      if (!aborted && err instanceof TypeError && netErrAttempts < MAX_RETRIES_ON_NETERR && !isLast) {
+        netErrAttempts++;
+        await sleep(500);
+        continue;
+      }
+      const reason = aborted ? `timeout after ${REQUEST_TIMEOUT_MS}ms` : err instanceof Error ? err.message : String(err);
       throw new Error(`GHL ${method} ${path} failed: ${reason}`);
     }
     clearTimeout(timer);
