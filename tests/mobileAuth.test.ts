@@ -182,4 +182,21 @@ describe("authedUserFromRequest", () => {
     const user = await authedUserFromRequest(reqWith({}));
     expect(user?.unlocked).toBe(false);
   });
+
+  it("accepts a cookie session that has a user but no email claim", async () => {
+    // The original cookie gate just checked `session.user`. Some session
+    // configs surface name without email; we still want to let those in.
+    authMock.mockResolvedValue({ user: { name: "Web User" } });
+    hasUnlockCookieMock.mockResolvedValue(true);
+    const user = await authedUserFromRequest(reqWith({}));
+    expect(user).not.toBeNull();
+    expect(user?.source).toBe("cookie");
+    expect(user?.email).toBe("Web User");
+  });
+
+  it("rejects a cookie session that has no user object", async () => {
+    authMock.mockResolvedValue({});
+    hasUnlockCookieMock.mockResolvedValue(false);
+    expect(await authedUserFromRequest(reqWith({}))).toBeNull();
+  });
 });
