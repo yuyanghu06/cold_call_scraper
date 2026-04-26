@@ -3,13 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const {
   authMock,
   hasUnlockCookieMock,
-  getCalendarEventsMock,
-  getContactMock,
+  searchContactsByTagMock,
 } = vi.hoisted(() => ({
   authMock: vi.fn(),
   hasUnlockCookieMock: vi.fn(),
-  getCalendarEventsMock: vi.fn(),
-  getContactMock: vi.fn(),
+  searchContactsByTagMock: vi.fn(),
 }));
 
 vi.mock("@/auth", () => ({ auth: authMock }));
@@ -31,10 +29,9 @@ vi.mock("@/lib/clients/ghlClient", async () => {
     );
   return {
     ...actual,
-    getCalendarEvents: getCalendarEventsMock,
-    getContact: getContactMock,
+    searchContactsByTag: searchContactsByTagMock,
     getLocationId: () => "loc-123",
-    getPickupCalendarIds: () => ["cal-1"],
+    getBookingDateFieldId: () => "field-1",
   };
 });
 
@@ -44,8 +41,7 @@ import { resolveRange } from "@/lib/pickup-date-range";
 beforeEach(() => {
   authMock.mockReset();
   hasUnlockCookieMock.mockReset();
-  getCalendarEventsMock.mockReset();
-  getContactMock.mockReset();
+  searchContactsByTagMock.mockReset();
   authMock.mockResolvedValue({ user: { email: "ops@micro-agi.com" } });
   hasUnlockCookieMock.mockResolvedValue(true);
 });
@@ -58,24 +54,42 @@ function buildRequest(qs: Record<string, string>): Request {
 
 interface ContactStub {
   id: string;
-  firstName?: string;
-  lastName?: string;
   name?: string;
-  email?: string;
-  phone?: string;
   tags?: string[];
   source?: string;
   customFields?: Array<{ id?: string; name?: string; value?: unknown }>;
   customField?: Array<{ id?: string; fieldKey?: string; value?: unknown }>;
 }
 
-function event(contactId: string, isoStartTime: string, extra: Partial<{ id: string; notes: string }> = {}) {
+function contact(
+  id: string,
+  bookingDate: string,
+  extra: Partial<{
+    tags: string[];
+    source: string;
+    customFields: Array<{ id?: string; name?: string; value?: unknown }>;
+    customField: Array<{ id?: string; fieldKey?: string; value?: unknown }>;
+  }> = {},
+): ContactStub {
+  const customFields = [
+    { id: "field-1", value: bookingDate },
+    ...(extra.customFields ?? []),
+  ];
   return {
-    id: extra.id ?? `evt-${contactId}`,
-    contactId,
-    startTime: isoStartTime,
-    notes: extra.notes,
+    id,
+    name: id,
+    tags: extra.tags,
+    customFields,
+    ...(extra.customField ? { customField: extra.customField } : {}),
+    ...(extra.source !== undefined ? { source: extra.source } : {}),
   };
+}
+
+// Returns a mock implementation that maps each tag → a slice of `byTag`.
+// Lets us verify the route searches across all three states and unions
+// the results without picking up duplicates.
+function mockSearchByTag(byTag: Partial<Record<string, ContactStub[]>>) {
+  searchContactsByTagMock.mockImplementation(async (tag: string) => byTag[tag] ?? []);
 }
 
 describe("resolveRange — validation matrix", () => {
@@ -110,20 +124,28 @@ describe("resolveRange — validation matrix", () => {
   });
 });
 
-describe("GET /api/ghl/pickups/today — calendar-events driver", () => {
-  it("returns a contact even when they're already tagged picked_up", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c-picked", "2026-04-26T14:00:00.000Z"),
+describe("GET /api/ghl/pickups/today — tag-union driver", () => {
+  it("queries all three pickup states (calendly-bookings, picked_up, no_pickup)", async () => {
+    mockSearchByTag({});
+    await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const calledWith = searchContactsByTagMock.mock.calls.map((c) => c[0]);
+    expect(calledWith).toEqual([
+      "calendly-bookings",
+      "picked_up",
+      "no_pickup",
     ]);
-    const pickedContact: ContactStub = {
-      id: "c-picked",
-      firstName: "Alice",
-      lastName: "Picked",
-      phone: "+15551234567",
-      tags: ["picked_up"],
-    };
-    getContactMock.mockResolvedValueOnce(pickedContact);
+  });
 
+  it("returns a contact tagged picked_up if their booking-date is in range", async () => {
+    mockSearchByTag({
+      picked_up: [contact("c-picked", "2026-04-26", { tags: ["picked_up"] })],
+    });
     const res = await GET(
       buildRequest({
         from: "2026-04-26",
@@ -140,17 +162,10 @@ describe("GET /api/ghl/pickups/today — calendar-events driver", () => {
     expect(body.contacts[0].tags).toEqual(["picked_up"]);
   });
 
-  it("returns a contact even when they're already tagged no_pickup", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c-noshow", "2026-04-26T15:00:00.000Z"),
-    ]);
-    const noShow: ContactStub = {
-      id: "c-noshow",
-      name: "Bob NoShow",
-      tags: ["no_pickup"],
-    };
-    getContactMock.mockResolvedValueOnce(noShow);
-
+  it("returns a contact tagged no_pickup if their booking-date is in range", async () => {
+    mockSearchByTag({
+      no_pickup: [contact("c-noshow", "2026-04-26", { tags: ["no_pickup"] })],
+    });
     const res = await GET(
       buildRequest({
         from: "2026-04-26",
@@ -166,106 +181,14 @@ describe("GET /api/ghl/pickups/today — calendar-events driver", () => {
     expect(body.contacts[0].tags).toEqual(["no_pickup"]);
   });
 
-  it("returns the union of all states (pending, picked, no-pickup) on the same day", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c-pending", "2026-04-26T09:00:00.000Z"),
-      event("c-picked", "2026-04-26T11:00:00.000Z"),
-      event("c-noshow", "2026-04-26T13:00:00.000Z"),
-    ]);
-    const contactsById: Record<string, ContactStub> = {
-      "c-pending": { id: "c-pending", name: "Pending", tags: ["calendly-bookings"] },
-      "c-picked": { id: "c-picked", name: "Picked", tags: ["picked_up"] },
-      "c-noshow": { id: "c-noshow", name: "NoShow", tags: ["no_pickup"] },
-    };
-    getContactMock.mockImplementation(async (cid: string) => contactsById[cid] ?? null);
-
-    const res = await GET(
-      buildRequest({
-        from: "2026-04-26",
-        to: "2026-04-26",
-        tz: "America/New_York",
-      }),
-    );
-    const body = (await res.json()) as {
-      contacts: Array<{ id: string; tags: string[]; appointmentTime: string }>;
-    };
-    expect(body.contacts.map((c) => c.id).sort()).toEqual([
-      "c-noshow",
-      "c-pending",
-      "c-picked",
-    ]);
-    // Sorted ascending by appointmentTime.
-    expect(body.contacts.map((c) => c.appointmentTime)).toEqual([
-      "2026-04-26T09:00:00.000Z",
-      "2026-04-26T11:00:00.000Z",
-      "2026-04-26T13:00:00.000Z",
-    ]);
-  });
-
-  it("from/to bound the calendar-events query (single-day window in tz)", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([]);
-    await GET(
-      buildRequest({
-        from: "2026-04-26",
-        to: "2026-04-26",
-        tz: "America/New_York",
-      }),
-    );
-    expect(getCalendarEventsMock).toHaveBeenCalledTimes(1);
-    const [calendarId, locationId, startMs, endMs] =
-      getCalendarEventsMock.mock.calls[0];
-    expect(calendarId).toBe("cal-1");
-    expect(locationId).toBe("loc-123");
-    // 2026-04-26 00:00 NY = 2026-04-26T04:00 UTC, end = next day 04:00 UTC.
-    const expectedStart = Date.UTC(2026, 3, 26, 4);
-    const expectedEnd = Date.UTC(2026, 3, 27, 4);
-    expect(startMs).toBe(expectedStart);
-    expect(endMs).toBe(expectedEnd);
-  });
-
-  it("multi-day from/to widens the window", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([]);
-    await GET(
-      buildRequest({
-        from: "2026-04-26",
-        to: "2026-04-28",
-        tz: "America/New_York",
-      }),
-    );
-    const [, , startMs, endMs] = getCalendarEventsMock.mock.calls[0];
-    const expectedStart = Date.UTC(2026, 3, 26, 4);
-    const expectedEnd = Date.UTC(2026, 3, 29, 4); // exclusive end of Apr 28
-    expect(startMs).toBe(expectedStart);
-    expect(endMs).toBe(expectedEnd);
-  });
-
-  it("dedupes multiple events for the same contact, keeping the earliest", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c-1", "2026-04-26T15:00:00.000Z", { id: "evt-late" }),
-      event("c-1", "2026-04-26T09:00:00.000Z", { id: "evt-early" }),
-    ]);
-    getContactMock.mockResolvedValueOnce({ id: "c-1", tags: [] });
-
-    const res = await GET(
-      buildRequest({
-        from: "2026-04-26",
-        to: "2026-04-26",
-        tz: "America/New_York",
-      }),
-    );
-    const body = (await res.json()) as {
-      contacts: Array<{ id: string; appointmentTime: string }>;
-    };
-    expect(body.contacts).toHaveLength(1);
-    expect(body.contacts[0].appointmentTime).toBe("2026-04-26T09:00:00.000Z");
-  });
-
-  it("includes a row even if the contact lookup fails (with a warning)", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c-broken", "2026-04-26T10:00:00.000Z"),
-    ]);
-    getContactMock.mockRejectedValueOnce(new Error("rate limited"));
-
+  it("returns the union of pending + picked + no-pickup contacts on the same day", async () => {
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("c-pending", "2026-04-26", { tags: ["calendly-bookings"] }),
+      ],
+      picked_up: [contact("c-picked", "2026-04-26", { tags: ["picked_up"] })],
+      no_pickup: [contact("c-noshow", "2026-04-26", { tags: ["no_pickup"] })],
+    });
     const res = await GET(
       buildRequest({
         from: "2026-04-26",
@@ -275,12 +198,70 @@ describe("GET /api/ghl/pickups/today — calendar-events driver", () => {
     );
     const body = (await res.json()) as {
       contacts: Array<{ id: string; tags: string[] }>;
-      warnings: string[];
     };
+    expect(body.contacts.map((c) => c.id).sort()).toEqual([
+      "c-noshow",
+      "c-pending",
+      "c-picked",
+    ]);
+  });
+
+  it("dedupes a contact that appears under multiple tag searches", async () => {
+    const dup = contact("c-dup", "2026-04-26", {
+      tags: ["calendly-bookings", "picked_up"],
+    });
+    mockSearchByTag({
+      "calendly-bookings": [dup],
+      picked_up: [dup],
+    });
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as { contacts: Array<{ id: string }> };
     expect(body.contacts).toHaveLength(1);
-    expect(body.contacts[0].id).toBe("c-broken");
-    expect(body.contacts[0].tags).toEqual([]);
-    expect(body.warnings.join(" ")).toContain("Contact c-broken lookup failed");
+  });
+
+  it("filters out contacts whose booking-date is outside the window", async () => {
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("a", "2026-04-25"),
+        contact("b", "2026-04-26"),
+        contact("c", "2026-04-27"),
+      ],
+    });
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as { contacts: Array<{ id: string }> };
+    expect(body.contacts.map((c) => c.id)).toEqual(["b"]);
+  });
+
+  it("multi-day ranges include each contact in the window", async () => {
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("a", "2026-04-25"),
+        contact("b", "2026-04-26"),
+        contact("c", "2026-04-27"),
+        contact("d", "2026-04-28"),
+      ],
+    });
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-27",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as { contacts: Array<{ id: string }> };
+    expect(body.contacts.map((c) => c.id).sort()).toEqual(["b", "c"]);
   });
 
   it("?from=2026-04-30&to=2026-04-26 → 400", async () => {
@@ -288,26 +269,44 @@ describe("GET /api/ghl/pickups/today — calendar-events driver", () => {
       buildRequest({ from: "2026-04-30", to: "2026-04-26" }),
     );
     expect(res.status).toBe(400);
-    expect(getCalendarEventsMock).not.toHaveBeenCalled();
+    expect(searchContactsByTagMock).not.toHaveBeenCalled();
   });
 
-  it("?to=… without from → 400", async () => {
-    const res = await GET(buildRequest({ to: "2026-04-26" }));
-    expect(res.status).toBe(400);
+  it("emits a warning when one of the tag searches fails but still returns the others", async () => {
+    searchContactsByTagMock.mockImplementation(async (tag: string) => {
+      if (tag === "no_pickup") throw new Error("rate limited");
+      if (tag === "calendly-bookings") {
+        return [contact("c", "2026-04-26", { tags: ["calendly-bookings"] })];
+      }
+      return [];
+    });
+    const res = await GET(
+      buildRequest({
+        from: "2026-04-26",
+        to: "2026-04-26",
+        tz: "America/New_York",
+      }),
+    );
+    const body = (await res.json()) as {
+      contacts: Array<{ id: string }>;
+      warnings: string[];
+    };
+    expect(body.contacts.map((c) => c.id)).toEqual(["c"]);
+    expect(body.warnings.join(" ")).toContain('"no_pickup"');
   });
 });
 
 describe("GET /api/ghl/pickups/today — discoverySource", () => {
   it("uses the v2 customFields shape over top-level source", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c", "2026-04-26T10:00:00.000Z"),
-    ]);
-    getContactMock.mockResolvedValueOnce({
-      id: "c",
-      source: "calendly",
-      customFields: [
-        { id: "f-other", name: "Other", value: "ignored" },
-        { id: "f-disc", name: "discovery_source", value: "Google Ads" },
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("c", "2026-04-26", {
+          source: "calendly",
+          customFields: [
+            { id: "f-other", name: "Other", value: "ignored" },
+            { id: "f-disc", name: "discovery_source", value: "Google Ads" },
+          ],
+        }),
       ],
     });
     const res = await GET(
@@ -317,18 +316,20 @@ describe("GET /api/ghl/pickups/today — discoverySource", () => {
         tz: "America/New_York",
       }),
     );
-    const body = (await res.json()) as { contacts: Array<{ discoverySource: string | null }> };
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
     expect(body.contacts[0].discoverySource).toBe("Google Ads");
   });
 
   it("uses the v1 customField fieldKey shape (case-insensitive)", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c", "2026-04-26T10:00:00.000Z"),
-    ]);
-    getContactMock.mockResolvedValueOnce({
-      id: "c",
-      customField: [
-        { id: "f-disc", fieldKey: "Discovery_Source", value: "Instagram" },
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("c", "2026-04-26", {
+          customField: [
+            { id: "f-disc", fieldKey: "Discovery_Source", value: "Instagram" },
+          ],
+        }),
       ],
     });
     const res = await GET(
@@ -338,15 +339,18 @@ describe("GET /api/ghl/pickups/today — discoverySource", () => {
         tz: "America/New_York",
       }),
     );
-    const body = (await res.json()) as { contacts: Array<{ discoverySource: string | null }> };
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
     expect(body.contacts[0].discoverySource).toBe("Instagram");
   });
 
   it("falls back to top-level source when no custom field matches", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c", "2026-04-26T10:00:00.000Z"),
-    ]);
-    getContactMock.mockResolvedValueOnce({ id: "c", source: "  Facebook Ads  " });
+    mockSearchByTag({
+      "calendly-bookings": [
+        contact("c", "2026-04-26", { source: "  Facebook Ads  " }),
+      ],
+    });
     const res = await GET(
       buildRequest({
         from: "2026-04-26",
@@ -354,15 +358,16 @@ describe("GET /api/ghl/pickups/today — discoverySource", () => {
         tz: "America/New_York",
       }),
     );
-    const body = (await res.json()) as { contacts: Array<{ discoverySource: string | null }> };
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
     expect(body.contacts[0].discoverySource).toBe("Facebook Ads");
   });
 
   it("returns null when neither custom field nor source is set", async () => {
-    getCalendarEventsMock.mockResolvedValueOnce([
-      event("c", "2026-04-26T10:00:00.000Z"),
-    ]);
-    getContactMock.mockResolvedValueOnce({ id: "c" });
+    mockSearchByTag({
+      "calendly-bookings": [contact("c", "2026-04-26")],
+    });
     const res = await GET(
       buildRequest({
         from: "2026-04-26",
@@ -370,7 +375,9 @@ describe("GET /api/ghl/pickups/today — discoverySource", () => {
         tz: "America/New_York",
       }),
     );
-    const body = (await res.json()) as { contacts: Array<{ discoverySource: string | null }> };
+    const body = (await res.json()) as {
+      contacts: Array<{ discoverySource: string | null }>;
+    };
     expect(body.contacts[0].discoverySource).toBeNull();
   });
 });

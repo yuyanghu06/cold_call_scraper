@@ -304,47 +304,50 @@ interface CalendarEventsResponse {
 // epoch-ms window. We use this instead of contact-tag search so the
 // pickup screen sees every booking regardless of post-call tag swaps.
 //
-// Calendar endpoints require Version 2021-04-15 — sending the contacts
-// version (2021-07-28) returns an empty result silently.
+// GHL quirks worth not forgetting:
+//   - Calendar endpoints require Version 2021-04-15 (not 2021-07-28).
+//     Sending the wrong version returns an empty array silently.
+//   - startTime / endTime are ISO 8601 strings, NOT milliseconds.
+//     Sending raw ms also returns an empty array silently.
 export async function getCalendarEvents(
   calendarId: string,
   locationId: string,
   startTimeMs: number,
   endTimeMs: number,
 ): Promise<GhlAppointment[]> {
+  const startIso = new Date(startTimeMs).toISOString();
+  const endIso = new Date(endTimeMs).toISOString();
   const params = new URLSearchParams({
     locationId,
     calendarId,
-    startTime: String(startTimeMs),
-    endTime: String(endTimeMs),
+    startTime: startIso,
+    endTime: endIso,
   });
+  const path = `/calendars/events?${params.toString()}`;
   const t0 = Date.now();
-  const res = await ghlRequest(
-    "GET",
-    `/calendars/events?${params.toString()}`,
-    undefined,
-    { version: CALENDAR_VERSION },
-  );
+  const res = await ghlRequest("GET", path, undefined, {
+    version: CALENDAR_VERSION,
+  });
   const text = await res.text();
   let json: CalendarEventsResponse = {};
   try {
     json = JSON.parse(text) as CalendarEventsResponse;
   } catch {
-    // Fall through with empty events; the body snippet below will tell us
+    // Fall through with empty events; the body snippet below tells us
     // why GHL returned a non-JSON payload.
   }
   const events = json.events ?? json.appointments ?? [];
   console.log(
-    `[ghl] /calendars/events calendarId=${calendarId} window=${startTimeMs}-${endTimeMs} got=${events.length} in ${Date.now() - t0}ms`,
+    `[ghl] /calendars/events calendarId=${calendarId} window=${startIso}..${endIso} got=${events.length} in ${Date.now() - t0}ms`,
   );
   // Empty results are easy to misdiagnose ("the calendar has no events"
   // vs "GHL doesn't like our request"). Log the response shape so the
-  // dev terminal makes the difference obvious.
+  // dev terminal makes the difference obvious without another round trip.
   if (events.length === 0) {
-    const snippet = text.length > 240 ? `${text.slice(0, 240)}…` : text;
+    const snippet = text.length > 400 ? `${text.slice(0, 400)}…` : text;
     const keys = Object.keys(json).join(",") || "(empty)";
     console.log(
-      `[ghl] /calendars/events empty body keys=${keys} body=${snippet}`,
+      `[ghl] /calendars/events empty status=${res.status} keys=${keys} body=${snippet}`,
     );
   }
   return events;

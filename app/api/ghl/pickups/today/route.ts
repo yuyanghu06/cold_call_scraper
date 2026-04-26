@@ -1,13 +1,22 @@
 // GET /api/ghl/pickups/today?tz=America/New_York&from=YYYY-MM-DD&to=YYYY-MM-DD
 //
-// Lists every contact with an appointment in the requested calendar window,
-// regardless of whether they've been tagged `picked_up` / `no_pickup`. The
-// iOS app does the Pending / Picked up / No pickup / All filtering client-
-// side off the contact's `tags` array, so we have to surface the full set.
+// Lists every contact whose `booking date` custom field falls inside the
+// requested calendar window, regardless of whether they've been tagged
+// `picked_up` / `no_pickup` afterward. The iOS app does Pending / Picked
+// up / No pickup / All filtering client-side off the contact's `tags`,
+// so we have to surface the full set.
 //
-// Driver: GHL `/calendars/events` for each configured calendar id, scoped
-// by epoch-ms window in the caller's tz. Each event's contactId resolves
-// to a full contact lookup (tags + customFields + top-level source).
+// Driver:
+//   1. Search contacts by tag, three times — the bookings live under one
+//      of `calendly-bookings`, `picked_up`, `no_pickup` depending on
+//      what's happened to the booking since it was created. The tag-swap
+//      routes (/picked-up, /no-pickup) strip `calendly-bookings` when
+//      they apply the new outcome, so any single-tag query loses the
+//      already-completed records.
+//   2. Dedupe by contact id (a contact only ever carries one of the
+//      three states, but the union pattern is defensive).
+//   3. Filter client-side: keep only contacts whose `contact.booking`
+//      custom-field value falls inside the [from, to] window.
 //
 // Response per contact (additive — older iOS builds ignore unknown keys):
 //   { id, name, phone, email, appointmentTime, appointmentNotes, tags,
@@ -17,27 +26,30 @@
 //   1. custom field whose name matches `discovery_source` (case-insensitive),
 //   2. the contact's top-level `source` attribute,
 //   3. null (also when the value is empty/whitespace).
-//
-// Backwards-compat: with no `from`/`to`, the window is today/today in tz.
 
 import { NextResponse } from "next/server";
-import pLimit from "p-limit";
 import { authedUserFromRequest } from "@/lib/mobileAuth";
 import {
+  bookingDateKeyInTz,
   findCustomFieldByName,
-  getCalendarEvents,
-  getContact,
+  getBookingDateFieldId,
   getLocationId,
-  getPickupCalendarIds,
-  type GhlAppointment,
+  parseDateAsEpochMs,
+  readContactCustomField,
+  searchContactsByTag,
   type GhlContact,
 } from "@/lib/clients/ghlClient";
-import { rangeToEpochMs, resolveRange } from "@/lib/pickup-date-range";
+import { resolveRange } from "@/lib/pickup-date-range";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const LOG = "[ghl/pickups/today]";
+
+// Every state a calendly booking can be in. We search each separately and
+// union the results so completed pickups (picked_up / no_pickup) are still
+// returned alongside pending ones.
+const PICKUP_TAG_STATES = ["calendly-bookings", "picked_up", "no_pickup"] as const;
 
 interface PickupContact {
   id: string;
@@ -82,6 +94,12 @@ function resolveDiscoverySource(c: GhlContact): string | null {
   return normalizeDiscoveryValue(c.source);
 }
 
+function appointmentTimeIso(raw: unknown, dateKey: string): string {
+  const ms = parseDateAsEpochMs(raw);
+  if (ms !== null) return new Date(ms).toISOString();
+  return `${dateKey}T00:00:00.000Z`;
+}
+
 export async function GET(req: Request) {
   const user = await authedUserFromRequest(req);
   if (!user) {
@@ -103,15 +121,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: rangeResult.error }, { status: 400 });
   }
   const { from, to } = rangeResult.range;
-  const { startMs, endMs } = rangeToEpochMs(rangeResult.range, tz);
 
-  const calendarIds = getPickupCalendarIds();
-  if (calendarIds.length === 0) {
+  const bookingDateFieldId = getBookingDateFieldId();
+  if (!bookingDateFieldId) {
     return NextResponse.json(
-      {
-        error:
-          "Server is missing GHL_CALENDAR_ID — set it (single id or comma-separated). Without it, this route would surface every event in the location, including unrelated calendars.",
-      },
+      { error: "Server is missing GHL_BOOKING_DATE_FIELD_ID — contact an admin." },
       { status: 500 },
     );
   }
@@ -128,79 +142,80 @@ export async function GET(req: Request) {
   const warnings: string[] = [];
 
   try {
-    console.log(
-      `${LOG} starting; tz=${tz} from=${from} to=${to} window=${startMs}-${endMs} calendars=${calendarIds.length}`,
-    );
+    console.log(`${LOG} starting; tz=${tz} from=${from} to=${to}`);
 
-    const eventLimit = pLimit(2);
-    const eventBatches = await Promise.all(
-      calendarIds.map((cid) =>
-        eventLimit(async (): Promise<GhlAppointment[]> => {
-          try {
-            return await getCalendarEvents(cid, locationId, startMs, endMs);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            warnings.push(`Calendar ${cid} fetch failed: ${message}`);
-            return [];
-          }
-        }),
-      ),
-    );
-
-    // One row per contact; keep their earliest event in the window for
-    // appointmentTime / appointmentNotes.
-    const earliestByContact = new Map<string, GhlAppointment>();
-    for (const batch of eventBatches) {
-      for (const event of batch) {
-        const cid = event.contactId;
-        if (!cid || !event.startTime) continue;
-        const existing = earliestByContact.get(cid);
-        if (!existing || event.startTime < existing.startTime) {
-          earliestByContact.set(cid, event);
+    // Three sequential tag searches (small, ~1s total). We could parallel
+    // them but the GHL pacer would serialize the requests anyway.
+    const seen = new Set<string>();
+    const allContacts: GhlContact[] = [];
+    for (const tag of PICKUP_TAG_STATES) {
+      try {
+        const batch = await searchContactsByTag(tag, locationId);
+        for (const c of batch) {
+          if (seen.has(c.id)) continue;
+          seen.add(c.id);
+          allContacts.push(c);
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        warnings.push(`Tag search for "${tag}" failed: ${message}`);
       }
     }
+    console.log(`${LOG} unioned ${allContacts.length} unique contact(s) across tags`);
 
-    if (earliestByContact.size === 0) {
-      console.log(`${LOG} no events in window — done in ${Date.now() - startedAt}ms`);
-      return NextResponse.json({ contacts: [], warnings });
+    let withCustomFields = 0;
+    let parseFailures = 0;
+    let exampleLogged = false;
+    const rows: PickupContact[] = [];
+
+    for (const contact of allContacts) {
+      if (contact.customFields && contact.customFields.length > 0) withCustomFields++;
+      const raw = readContactCustomField(contact, bookingDateFieldId);
+      if (raw === undefined || raw === null || raw === "") continue;
+
+      const dateKey = bookingDateKeyInTz(raw, tz);
+      if (dateKey === null) {
+        parseFailures++;
+        continue;
+      }
+
+      // Log one real example so the dev terminal shows the actual storage
+      // format — invaluable when the parser misfires on a tz boundary.
+      if (!exampleLogged) {
+        console.log(
+          `${LOG} sample raw=${JSON.stringify(raw)} type=${typeof raw} → dateKey=${dateKey}`,
+        );
+        exampleLogged = true;
+      }
+
+      // YYYY-MM-DD strings sort lexicographically.
+      if (dateKey < from || dateKey > to) continue;
+
+      rows.push({
+        id: contact.id,
+        name: contactName(contact),
+        phone: contact.phone ?? null,
+        email: contact.email ?? null,
+        appointmentTime: appointmentTimeIso(raw, dateKey),
+        appointmentNotes: null,
+        tags: contact.tags ?? [],
+        discoverySource: resolveDiscoverySource(contact),
+      });
     }
 
-    const contactLimit = pLimit(5);
-    const entries = Array.from(earliestByContact.entries());
-    const enriched = await Promise.all(
-      entries.map(([cid, event]) =>
-        contactLimit(async (): Promise<PickupContact | null> => {
-          let contact: GhlContact | null = null;
-          try {
-            contact = await getContact(cid, locationId);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            warnings.push(`Contact ${cid} lookup failed: ${message}`);
-          }
-          // Use whatever contact info we have, plus the event metadata.
-          // If the contact lookup outright failed, we still include the row
-          // (with empty enrichment) so the iOS app can render the
-          // appointment — the caller can still complete the pickup action.
-          return {
-            id: cid,
-            name: contact ? contactName(contact) : cid,
-            phone: contact?.phone ?? null,
-            email: contact?.email ?? null,
-            appointmentTime: event.startTime,
-            appointmentNotes: event.notes ?? null,
-            tags: contact?.tags ?? [],
-            discoverySource: contact ? resolveDiscoverySource(contact) : null,
-          };
-        }),
-      ),
-    );
+    if (allContacts.length > 0 && withCustomFields === 0) {
+      warnings.push(
+        "GHL search returned contacts but none included customFields. The Private Integration token may be missing the custom-fields scope.",
+      );
+    }
+    if (parseFailures > 0) {
+      warnings.push(`${parseFailures} contact(s) had unparseable booking-date values.`);
+    }
 
-    const rows = enriched.filter((p): p is PickupContact => p !== null);
     rows.sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
 
     console.log(
-      `${LOG} done in ${Date.now() - startedAt}ms — events=${[...earliestByContact.values()].length} contacts=${rows.length}`,
+      `${LOG} done in ${Date.now() - startedAt}ms — matched=${rows.length}`,
     );
     return NextResponse.json({ contacts: rows, warnings });
   } catch (err) {
